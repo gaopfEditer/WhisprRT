@@ -24,8 +24,7 @@ def get_models():
     """返回可用的模型列表"""
     return {
         "models": AVAILABLE_MODELS,
-        "current": whisper_service.model_name if whisper_service.model else None,
-        "loaded": whisper_service._model_loaded if hasattr(whisper_service, '_model_loaded') else False
+        "current": whisper_service.model_name
     }
 
 @router.post('/change_model')

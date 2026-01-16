@@ -14,9 +14,7 @@ AVAILABLE_MODELS = {
     "small": "小型模型，速度和精度平衡",
     "large-v3-turbo": "大型模型，精度高，接近tiny的速度"
 }
-# 默认模型：如果网络有问题，可以先使用 "tiny" 或 "base" 测试
-# 网络正常后可以改为 "large-v3-turbo"
-DEFAULT_MODEL = "tiny"  # 临时改为 tiny 以便测试，网络正常后可改回 "large-v3-turbo"
+DEFAULT_MODEL = "small"
 DEFAULT_LANGUAGE = "zh"
 
 # 反幻觉配置 - 速度优化

@@ -43,11 +43,79 @@
 
 ### 前置要求
 
-- **Python**：3.10 或更高版本
+- **Python**：3.13 或更高版本
 - **uv**：推荐的 Python 包管理工具（[安装指南](https://github.com/astral-sh/uv)）
 - **操作系统**：Windows、MacOS 或 Linux
 
 ### 安装步骤
+
+#### Windows 用户
+
+1. **安装 Python 和 uv**：
+   - 下载并安装 Python 3.13+：[Python 官网](https://www.python.org/downloads/)
+   - 安装 uv（推荐使用 PowerShell）：
+     ```powershell
+     powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+     ```
+   或者使用 pip 安装：
+     ```powershell
+     pip install uv
+     ```
+
+2. **克隆项目并进入目录**：
+   ```powershell
+   git clone https://github.com/zhengjim/WhisprRT.git
+   cd WhisprRT
+   ```
+
+3. **安装依赖**：
+   ```powershell
+   uv sync
+   ```
+
+4. **激活虚拟环境并启动服务**：
+   
+   **方式一：使用 Python 命令（推荐，最简单）**
+   ```powershell
+   # PowerShell
+   .venv\Scripts\Activate.ps1
+   python -m app.main
+   ```
+   ```cmd
+   # CMD
+   .venv\Scripts\activate.bat
+   python -m app.main
+   ```
+   
+   **方式二：使用 uvicorn 命令**
+   ```powershell
+   # PowerShell
+   .venv\Scripts\Activate.ps1
+   uvicorn app.main:app --reload --port 5444
+   ```
+   ```cmd
+   # CMD
+   .venv\Scripts\activate.bat
+   uvicorn app.main:app --reload --port 5444
+   ```
+   
+   如果 PowerShell 遇到执行策略错误，先运行：
+   ```powershell
+   Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+   ```
+   
+   **方式三：使用启动脚本（最简单）**
+   - 双击运行 `start.bat`（适用于 CMD）
+   - 或在 PowerShell 中运行：`.\start.ps1`
+
+5. **打开浏览器，访问**：
+   ```
+   http://127.0.0.1:5444
+   ```
+   
+   > **注意**：默认端口为 5444（可在 `app/config.py` 中修改）
+
+#### Linux/MacOS 用户
 
 1. 克隆项目并进入目录：
 
@@ -65,23 +133,28 @@
 3. 激活虚拟环境：
 
    ```bash
-   source .venv/bin/activate  # Linux/MacOS
-   .venv\Scripts\activate     # Windows
+   source .venv/bin/activate
    ```
 
 4. 启动服务：
 
    ```bash
-   uvicorn app.main:app --reload
+   # 方式一：使用 Python 命令（推荐）
+   python -m app.main
+   
+   # 方式二：使用 uvicorn 命令
+   uvicorn app.main:app --reload --port 5444
    ```
 
 5. 打开浏览器，访问：
 
    ```
-   http://127.0.0.1:8000
+   http://127.0.0.1:5444
    ```
 
-> **注意**：建议仅在 `127.0.0.1` 运行，防止未经授权的访问。
+> **注意**：
+> - 默认端口为 5444（可在 `app/config.py` 中修改）
+> - 建议仅在 `127.0.0.1` 运行，防止未经授权的访问
 
 ### 推荐模型
 
