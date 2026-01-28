@@ -1,0 +1,23 @@
+直接基于已有的库来生成
+
+
+##### ✅ 步骤1：先下载YouTube音频
+
+pip install yt-dlp
+yt-dlp -x --audio-format wav "https://youtube.com/watch?v=xxx" -o audio.wav
+
+##### ✅ 步骤2：使用WhisperX转录
+
+whisperx audio.wav \
+  --model large-v2 \
+  --language zh \
+  --output_dir subtitles \
+  --output_format srt \
+  --compute_type float16
+
+https://hf-mirror.com/Systran/faster-whisper-large-v2/tree/main 模型
+
+whisperx audio.wav --model large-v2 --language zh --output_dir 
+subtitles --output_format txt --compute_type int8 --vad_method silero 可以完成，后续可以把关注列表的youtube视频导出成音视频（速度快），再把音视频输出为文字稿（速度慢），上面这个输出是繁体字，再进一步处理即可，还有一个点，不会断句，需要ai处理。
+
+whisperx audio.wav --model large-v2 --language zh --output_dir subtitles --output_format txt --compute_type int8 --vad_method silero | Out-File -FilePath "subtitles\\my_transcript.txt" -Encoding utf8
