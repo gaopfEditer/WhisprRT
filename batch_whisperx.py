@@ -13,6 +13,10 @@ CONFIG_PATH = Path("videos.json")
 AUDIO_DIR = Path("audios")
 # 文字稿输出目录
 TRANSCRIPT_DIR = Path("subtitles")
+# 日志目录（保存原始转写结果，包含调试信息）
+LOG_DIR = Path("logs")
+# 最终输出目录（只保存精排后的干净文本）
+OUTPUT_DIR = Path("output")
 
 # WhisperX 参数（按你当前稳定可用的命令来）
 WHISPER_MODEL = "large-v2"
@@ -50,6 +54,8 @@ def load_config():
 def ensure_dirs():
     AUDIO_DIR.mkdir(parents=True, exist_ok=True)
     TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def download_audio(name: str, link: str) -> Path:
@@ -86,9 +92,12 @@ def download_audio(name: str, link: str) -> Path:
 def transcribe_audio(name: str, wav_path: Path):
     """
     使用 whisperx 生成文字稿，并保存为 subtitles/name.txt
+    原始输出（含调试信息）保存到 logs/name.txt
+    最终精排结果保存到 output/name.txt
     """
     ensure_dirs()
     transcript_path = TRANSCRIPT_DIR / f"{name}.txt"
+    log_path = LOG_DIR / f"{name}.txt"  # 原始输出（含调试信息）
 
     cmd = [
         "whisperx",
@@ -110,7 +119,7 @@ def transcribe_audio(name: str, wav_path: Path):
 
     # 启动 whisperx 子进程，流式读取 stdout，同时写入文件并打印到控制台
     print(f"\n>>> Transcribing {wav_path} -> {transcript_path}")
-    with open(transcript_path, "w", encoding="utf-8") as f:
+    with open(transcript_path, "w", encoding="utf-8") as f, open(log_path, "w", encoding="utf-8") as log_f:
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -122,12 +131,14 @@ def transcribe_audio(name: str, wav_path: Path):
         assert process.stdout is not None
         for line in process.stdout:
             print(line, end="")
-            f.write(line)
+            f.write(line)  # subtitles 目录（临时）
+            log_f.write(line)  # logs 目录（原始完整输出）
         process.wait()
         if process.returncode != 0:
             raise RuntimeError(f"WhisperX 转写失败: {process.returncode}")
 
     print(f"\n✅ 转写完成：{transcript_path}")
+    print(f"✅ 原始日志已保存：{log_path}")
 
     # 使用 AI 进一步整理断句，生成精排稿
     try:
@@ -139,25 +150,31 @@ def transcribe_audio(name: str, wav_path: Path):
 
 def extract_plain_text_from_transcript(raw_text: str) -> str:
     """
-    从 WhisperX 的 Transcript 行中提取纯文本并合并。
-    形如：Transcript: [0.674 --> 28.222] 内容...
+    从 WhisperX 的原始输出中提取纯文本，过滤掉所有调试信息。
+    只保留 Transcript: [时间] 格式的行中的文本内容。
     """
     lines = raw_text.splitlines()
     texts: list[str] = []
     pattern = re.compile(r"^Transcript:\s*\[[^\]]+\]\s*(.*)$")
+    
     for line in lines:
-        m = pattern.match(line.strip())
+        line = line.strip()
+        # 只匹配 Transcript: [时间] 格式的行
+        m = pattern.match(line)
         if m:
             content = m.group(1).strip()
             if content:
                 texts.append(content)
-    # 用换行拼接，便于后续 AI 断句、重排
-    return "\n".join(texts)
+        # 忽略所有其他行（UserWarning、INFO、WARNING 等调试信息）
+    
+    # 用空格拼接所有文本片段，形成连续文本
+    return " ".join(texts)
 
 
 def call_qwen(prompt: str) -> str:
     """
     调用通义千问 API，对文本进行断句/整理。
+    使用 messages 格式（通义千问标准格式）。
     """
     if not QWEN_API_KEY:
         raise RuntimeError("QWEN_API_KEY 未配置")
@@ -167,9 +184,17 @@ def call_qwen(prompt: str) -> str:
         "Authorization": f"Bearer {QWEN_API_KEY}",
     }
 
+    # 通义千问使用 messages 格式
     payload = {
         "model": QWEN_MODEL,
-        "input": prompt,
+        "input": {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ]
+        },
         "parameters": {
             "temperature": 0.7,
             "max_tokens": 2000,
@@ -177,20 +202,32 @@ def call_qwen(prompt: str) -> str:
     }
 
     resp = requests.post(QWEN_ENDPOINT, headers=headers, json=payload, timeout=60)
-    resp.raise_for_status()
+    
+    if resp.status_code != 200:
+        error_detail = resp.text
+        raise RuntimeError(f"Qwen API 调用失败 ({resp.status_code}): {error_detail}")
+    
     data = resp.json()
 
-    # 通义千问返回格式参考官方文档，这里按通用结构读取
+    # 通义千问返回格式：data.output.choices[0].message.content
     try:
-        return data["output"]["text"]
-    except Exception:
-        # 打印原始返回，方便调试
-        raise RuntimeError(f"Qwen 返回解析失败: {data}")
+        if "output" in data and "choices" in data["output"]:
+            if len(data["output"]["choices"]) > 0:
+                return data["output"]["choices"][0]["message"]["content"]
+        # 兼容其他可能的返回格式
+        if "output" in data and "text" in data["output"]:
+            return data["output"]["text"]
+        # 如果都不匹配，打印原始返回以便调试
+        raise RuntimeError(f"Qwen 返回格式异常: {data}")
+    except (KeyError, IndexError) as e:
+        raise RuntimeError(f"Qwen 返回解析失败: {data}, 错误: {e}")
 
 
 def refine_transcript_with_qwen(name: str, transcript_path: Path) -> Path:
     """
     读取原始 transcript，提取纯文本交给 Qwen，生成断句正确的精排稿。
+    先生成精排全文，再生成摘要，最终组合输出。
+    最终结果保存到 output/name.txt（格式：摘要：[摘要]\n\n全文：[全文]）。
     """
     raw = transcript_path.read_text(encoding="utf-8")
     plain_text = extract_plain_text_from_transcript(raw)
@@ -198,6 +235,7 @@ def refine_transcript_with_qwen(name: str, transcript_path: Path) -> Path:
     if not plain_text.strip():
         raise RuntimeError("原始 transcript 中未提取到有效文本")
 
+    # 第一步：生成精排全文
     system_prompt = (
         "你是一个中文文字编辑助手。"
         "现在给你一段由语音识别得到的中文文本，内容已经基本正确，但存在："
@@ -213,9 +251,26 @@ def refine_transcript_with_qwen(name: str, transcript_path: Path) -> Path:
 
     prompt = system_prompt + plain_text
     refined_text = call_qwen(prompt)
+    refined_text = refined_text.strip()
 
-    refined_path = transcript_path.with_name(f"{name}_refined.txt")
-    refined_path.write_text(refined_text, encoding="utf-8")
+    # 第二步：基于精排全文生成摘要
+    summary_prompt = (
+        "你是一个内容摘要助手。"
+        "请为以下文本生成一个简洁准确的摘要，控制在100-200字以内。"
+        "摘要应该概括文本的核心内容和主要观点。\n\n"
+        "待摘要的文本：\n"
+    )
+    summary_prompt += refined_text
+    summary = call_qwen(summary_prompt)
+    summary = summary.strip()
+
+    # 第三步：组合输出（摘要 + 全文）
+    final_output = f"摘要：{summary}\n\n全文：{refined_text}"
+
+    # 保存到 output 目录（最终输出，只包含干净文本）
+    ensure_dirs()
+    refined_path = OUTPUT_DIR / f"{name}.txt"
+    refined_path.write_text(final_output, encoding="utf-8")
     return refined_path
 
 

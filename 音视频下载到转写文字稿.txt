@@ -1,7 +1,7 @@
 直接基于已有的库来生成
 
 
-##### ✅ 步骤1：先下载YouTube音频
+##### ✅ 步骤1：先下载YouTube或者b站音频
 
 pip install yt-dlp
 yt-dlp -x --audio-format wav "https://youtube.com/watch?v=xxx" -o audio.wav

@@ -1,0 +1,17 @@
+D:\dev\python\Lib\site-packages\pyannote\audio\core\io.py:212: UserWarning: torchaudio._backend.list_audio_backends has been deprecated. This deprecation is part of a large refactoring effort to transition TorchAudio into a maintenance phase. The decoding and encoding capabilities of PyTorch for both audio and video are being consolidated into TorchCodec. Please see https://github.com/pytorch/audio/issues/3902 for more information. It will be removed from the 2.9 release. 
+  torchaudio.list_audio_backends()
+D:\dev\python\Lib\site-packages\speechbrain\utils\torch_audio_backend.py:57: UserWarning: torchaudio._backend.list_audio_backends has been deprecated. This deprecation is part of a large refactoring effort to transition TorchAudio into a maintenance phase. The decoding and encoding capabilities of PyTorch for both audio and video are being consolidated into TorchCodec. Please see https://github.com/pytorch/audio/issues/3902 for more information. It will be removed from the 2.9 release. 
+  available_backends = torchaudio.list_audio_backends()
+2026-01-29 15:02:56 - whisperx.vads.silero - INFO - Performing voice activity detection using Silero...
+Using cache found in C:\Users\eason/.cache\torch\hub\snakers4_silero-vad_master
+2026-01-29 15:02:57 - whisperx.transcribe - INFO - Performing transcription...
+Transcript: [0.354 --> 25.95] 朋友 过去的一年你变强了吗Gemini 3已经出来快两个月了你的简历有没有多一笔年终一总结今年看了100个博主关于AI的1000个精彩玩法但是你的生活有变得更精彩吗博士级的全能AI助手围着你转你的收入和空闲时间有变多吗如果都没有问题出在哪咱不扯什么大环境啊我最近在写Gemini的稿子写到一半我觉得还是有必要掏心窝子聊一聊
+Transcript: [26.114 --> 53.342] 隔三差五就颠覆世界刷新认知炸裂升级的AI没有让你的生活变得更好那一定是哪里出了问题这个题又该怎么解我先道歉坦白说我们做博主的有一定责任我们难得抽卡抽个还行的案例就做视频吹半天场景局限成本缺点是啥都不说Gemini 3一出来都是第一时间去X上面搜一些国外网友分享的看起来很酷炫的案例然后凑到一块跟你说连夜爆肝深度测评Gemini 3的20个精彩玩法都在这了
+Transcript: [53.666 --> 81.79] 然後你就發現那些吹得很牛的神器怎麼初到極巔峰一上手就崩了說實話目前就這麼個生態免費做視頻吹海外F4收費接商單說國內AI好就像免費做iPhone和特斯拉的視頻然後收費接國內手機和汽車的商單都是一樣的套路好在國內AI還是很爭氣的那拋開吹泡泡的成分AI毋庸置疑是有價值的比如說現在大家都默認AI翻譯是最準的文生圖也很多人在用好那你自己琢磨一下
+Transcript: [82.05 --> 110.686] AI到底能对你产生多大的价值你不用纠结到底是哪个AI你就统称为新的革命性生产力工具它能对你产生多大的价值你会怎么思考这个问题自己想别问AI那我提供一个思考角度就是你用了AI之后你个人可支配的收入和时间有没有变多你用了AI之后社会有需要的产品和内容有没有变多或者变好这是我的思考逻辑很简单也很好理解在任何一点上有突破和提升你用AI都算产生价值了
+Transcript: [111.202 --> 141.15] 比如说你用Gemini一个小时完成了四个小时的工作节省了三个小时但是领导又额外给你安排了三个小时的杂活你一个顶俩但工资一分没涨AI对你就没啥价值你用AI生图生成了一张图片贴在了评论区收获了几个赞但这不是社会需要的内容AI对你也没价值仅仅是自娱自乐我让Gemini每天定时给我推送我关注领域的信息简报我就不用浪费时间去刷视频那我可支配的时间就多了我用省下来的时间去更新了这条视频然后发到YouTube上面收获了播放的广告分成那我收入也变多了
+Transcript: [141.41 --> 164.83] 我也認為這是社會需要的內容所以Gemini就為我創造了價值你可以用AI省下的時間研究CompuI的工作流搭建做實用的瀏覽器插件做AI玩具硬件做AI漫劇等等都可以這些都是社會需要的產品或者內容你就會有收益但是惡搞科比整花活不是你的崗位和AI碰撞你的能力和AI能力融合一定能搞出點名堂但這是你的課題需要你自己去研究
+Transcript: [165.474 --> 191.262] 这个时候就能理解为什么同样是20美金有人觉得很浪费就一直白嫖有人觉得很划算就一直订阅更简单点价值判断就是用AI省下的时间对应它的时薪比订阅费高那就果断用然后把省下来的时间投入到社会有需要的产品或者内容上面去那产品内容变现就能带来更多的收入然后买更强的AI省下更多的时间然后做更多更好的产品和内容这样的话这两个飞轮就转起来了
+Transcript: [191.874 --> 220.382] 而且国内外很多AI产品是免费的或者说是有免费额度的这个就是飞轮的初始推动力比如说你做PPT找图片10分钟未必能找到满意极梦2分钟上传一张4K高清图只要一毛钱你的8分钟不值一毛钱吗有些人就说我不想为了偶尔的低频需求去持续的付费订阅感觉不划算这就引出了一个反直觉的真相AI正在加剧时间频布差距就是富人更富 忙人更忙这也没准实心高的人就是觉得划算
+Transcript: [220.898 --> 248.414] 好在新技術的誕生肯定都會有結構性的機會不差錢的人他未必就用得好啊《高效執行四原則》這本書裡面有一個精彩的洞察執行力真正的敵人是日常事務僅僅是保持日常工作的正常運行就需要耗費你大兩倍精力怎麼在日常事務的包圍下去用好AI產生價值這又是你自己的課題更涉及時間管理核心就是你省下的時間不能又被瑣碎的事情搶回去了如果你問我打工人怎麼贏排第一個答案是少刷抖音
+Transcript: [249.186 --> 276.286] AI好不容易幫你省下了時間你沒有交給新的瑣碎但是轉頭都給了短視頻這還是白瞎了我們就變成被兩大AI算法無盡拉扯的肉雞生產力AI讓你更賣力注意力AI讓你更成名永無出頭之日時間花在哪成果就在哪這是再簡單不過的道理咱們可以忙但是不能窮嘛你必須用抖音APP掃描二維碼你才能登陸寂寞AI我就很不喜歡你覺得呢希望對你有啟發謝謝你的時間下個視頻再見
