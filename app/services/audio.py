@@ -97,14 +97,59 @@ class AudioService:
         Returns:
             InputStream: 音频输入流
         """
-        return sd.InputStream(
-            samplerate=samplerate, 
-            channels=channels, 
-            dtype=dtype,
-            callback=callback, 
-            blocksize=blocksize, 
-            device=self.current_device
-        )
+        try:
+            # 如果 current_device 为 None，不传递 device 参数，让 sounddevice 使用默认设备
+            # 这样可以避免在 Windows 上出现设备查询错误
+            if self.current_device is None:
+                logger.info("使用系统默认音频输入设备")
+                return sd.InputStream(
+                    samplerate=samplerate, 
+                    channels=channels, 
+                    dtype=dtype,
+                    callback=callback, 
+                    blocksize=blocksize
+                )
+            else:
+                # 验证设备是否存在且可用
+                devices = sd.query_devices()
+                if self.current_device >= len(devices) or self.current_device < 0:
+                    logger.error(f"无效的设备ID: {self.current_device}，将使用默认设备")
+                    return sd.InputStream(
+                        samplerate=samplerate, 
+                        channels=channels, 
+                        dtype=dtype,
+                        callback=callback, 
+                        blocksize=blocksize
+                    )
+                
+                device = devices[self.current_device]
+                logger.info(f"使用音频设备: {device['name']} (ID: {self.current_device})")
+                return sd.InputStream(
+                    samplerate=samplerate, 
+                    channels=channels, 
+                    dtype=dtype,
+                    callback=callback, 
+                    blocksize=blocksize, 
+                    device=self.current_device
+                )
+        except Exception as e:
+            logger.error(f"创建音频输入流失败: {str(e)}")
+            # 如果指定设备失败，尝试使用默认设备
+            if self.current_device is not None:
+                logger.info("尝试使用默认设备作为备选方案")
+                try:
+                    return sd.InputStream(
+                        samplerate=samplerate, 
+                        channels=channels, 
+                        dtype=dtype,
+                        callback=callback, 
+                        blocksize=blocksize
+                    )
+                except Exception as e2:
+                    logger.error(f"使用默认设备也失败: {str(e2)}")
+                    raise
+            else:
+                raise
 
 # 创建全局音频服务实例
 audio_service = AudioService()

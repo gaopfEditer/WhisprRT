@@ -43,7 +43,8 @@
 
 ### 前置要求
 
-- **Python**：3.13 或更高版本
+- **Python**：3.13（推荐）或更高版本
+  - ⚠️ **注意**：由于 `onnxruntime` 的兼容性限制，当前仅支持 Python 3.13。Python 3.14 暂不支持，请使用 Python 3.13。
 - **uv**：推荐的 Python 包管理工具（[安装指南](https://github.com/astral-sh/uv)）
 - **操作系统**：Windows、MacOS 或 Linux
 
@@ -52,7 +53,7 @@
 #### Windows 用户
 
 1. **安装 Python 和 uv**：
-   - 下载并安装 Python 3.13+：[Python 官网](https://www.python.org/downloads/)
+   - 下载并安装 Python 3.13（⚠️ 请使用 3.13 版本，不要使用 3.14）：[Python 3.13 下载](https://www.python.org/downloads/release/python-3130/)
    - 安装 uv（推荐使用 PowerShell）：
      ```powershell
      powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
@@ -252,24 +253,45 @@ python test_anti_hallucination.py
 ### 1. WhisprRT 需要联网吗？
 不需要，WhisprRT 100% 离线运行，音频数据不上传，保护隐私。
 
-### 2. 如何选择适合的模型？
+### 2. 安装时提示 "onnxruntime can't be installed" 或 "Error querying device -1"？
+这通常是 Python 版本兼容性问题：
+
+**问题原因：**
+- `onnxruntime` 1.23.2（`faster-whisper` 的依赖）目前只支持 Python 3.13
+- 如果您使用的是 Python 3.14，会出现兼容性问题
+
+**解决方案：**
+1. **降级到 Python 3.13**（推荐）：
+   - 卸载 Python 3.14
+   - 安装 Python 3.13：[下载地址](https://www.python.org/downloads/release/python-3130/)
+   - 重新运行 `uv sync`
+
+2. **检查 Python 版本**：
+   ```powershell
+   python --version
+   ```
+   确保显示的是 `Python 3.13.x`
+
+> **注意**：项目要求 Python 3.13，暂不支持 Python 3.14。请使用 Python 3.13 版本。
+
+### 3. 如何选择适合的模型？
 优先使用 `large-v3-turbo`，性能不足时可尝试 `medium` 或 `small` 模型。
 
-### 3. 为什么转写速度慢？
+### 4. 为什么转写速度慢？
 可能原因：
 - 硬件性能不足，尝试切换至更轻量模型。
 - 未正确配置虚拟环境，确保依赖安装完整。
 
-### 4. 支持哪些语言？
+### 5. 支持哪些语言？
 基于 Whisper，支持多语言转写，包括中文、英文、日文等。
 
-### 5. 如何解决 large-v3-turbo 的幻觉问题？
+### 6. 如何解决 large-v3-turbo 的幻觉问题？
 WhisprRT 已内置反幻觉优化，如仍有问题可：
 - 通过 API 提高 `confidence_threshold`（建议 0.7-0.8）
 - 降低 `silence_threshold` 强化静音检测
 - 添加自定义幻觉检测模式到配置文件
 
-### 6. 如何自定义幻觉检测模式？
+### 7. 如何自定义幻觉检测模式？
 编辑 `app/config.py` 中的 `HALLUCINATION_PATTERNS` 列表，添加正则表达式模式：
 
 ```python
@@ -280,7 +302,7 @@ HALLUCINATION_PATTERNS = [
 ]
 ```
 
-### 7. 模型下载失败，提示连接 Hugging Face 超时？
+### 8. 模型下载失败，提示连接 Hugging Face 超时？
 如果遇到 `ConnectTimeoutError` 或 `LocalEntryNotFoundError`，说明无法连接到 Hugging Face 下载模型。解决方法：
 
 **方法一：配置代理（推荐）**
@@ -305,7 +327,7 @@ $env:HF_ENDPOINT = "https://hf-mirror.com"
 **方法四：使用已下载的模型**
 如果模型已下载到本地，WhisprRT 会自动使用本地模型，无需重新下载。
 
-### 8. 模型下载速度太慢，卡在下载界面？
+### 9. 模型下载速度太慢，卡在下载界面？
 如果模型下载速度极慢（如 < 100KB/s），可以尝试以下方法：
 
 **方法一：使用 Hugging Face CLI 下载（推荐，支持断点续传）**
@@ -353,7 +375,7 @@ whisperx audio.wav --model small --language zh --output_dir subtitles --output_f
    C:\Users\eason\.cache\huggingface\hub\models--Systran--faster-whisper-large-v2\snapshots\main\model.bin
    ```
 
-### 9. 提示 "Requested float16 compute type, but the target device or backend do not support efficient float16 computation"？
+### 10. 提示 "Requested float16 compute type, but the target device or backend do not support efficient float16 computation"？
 这个错误表示你使用了 `--compute_type float16`，但当前设备（通常是 CPU）不支持 float16 计算。
 
 **解决方案：根据设备类型选择合适的 compute_type**
@@ -388,7 +410,7 @@ whisperx audio.wav --model large-v2 --language zh --output_dir subtitles --outpu
 
 > **提示**：如果不确定设备类型，先尝试 `int8`（CPU）或 `float16`（GPU）。
 
-### 10. 提示 "Weights only load failed" 或 "Unsupported global: GLOBAL omegaconf.listconfig.ListConfig"？
+### 11. 提示 "Weights only load failed" 或 "Unsupported global: GLOBAL omegaconf.listconfig.ListConfig"？
 这是 PyTorch 2.6 版本兼容性问题。PyTorch 2.6 改变了 `torch.load` 的默认行为，导致 WhisperX 的 VAD 模型无法加载。
 
 **解决方案：**
