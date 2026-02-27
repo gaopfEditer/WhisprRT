@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
+import sys
 
 import requests
 
@@ -68,17 +69,21 @@ def download_audio(name: str, link: str) -> Path:
 
     # 如果已存在同名 wav，直接复用，避免重复下载
     if wav_path.exists():
-        print(f"\n✅ 音频已存在，跳过下载：{wav_path}")
+        print(f"\n[INFO] 音频已存在，跳过下载：{wav_path}")
         return wav_path
 
     # yt-dlp 输出模板
     out_template = str(AUDIO_DIR / f"{name}.%(ext)s")
 
+    # 使用 Python 模块方式运行 yt-dlp
     cmd = [
-        "yt-dlp",
+        sys.executable, "-m", "yt_dlp",
         "-x",
         "--audio-format",
         "wav",
+        "--ignore-config",  # 忽略可能冲突的配置文件
+        "--force-ipv4",     # 强制使用IPv4
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
         link,
         "-o",
         out_template,
@@ -137,15 +142,15 @@ def transcribe_audio(name: str, wav_path: Path):
         if process.returncode != 0:
             raise RuntimeError(f"WhisperX 转写失败: {process.returncode}")
 
-    print(f"\n✅ 转写完成：{transcript_path}")
-    print(f"✅ 原始日志已保存：{log_path}")
+    print(f"\n[INFO] 转写完成：{transcript_path}")
+    print(f"[INFO] 原始日志已保存：{log_path}")
 
     # 使用 AI 进一步整理断句，生成精排稿
     try:
         refined_path = refine_transcript_with_qwen(name, transcript_path)
-        print(f"✅ AI 断句整理完成：{refined_path}")
+        print(f"[INFO] AI 断句整理完成：{refined_path}")
     except Exception as e:
-        print(f"⚠ AI 处理失败（跳过）：{e}")
+        print(f"[WARN] AI 处理失败（跳过）：{e}")
 
 
 def extract_plain_text_from_transcript(raw_text: str) -> str:

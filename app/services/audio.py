@@ -83,6 +83,29 @@ class AudioService:
             logger.error(f"选择音频设备失败: {str(e)}")
             return {"status": "error", "message": f"选择音频设备失败: {str(e)}"}
     
+    def _get_all_input_device_ids(self):
+        """获取所有支持输入的设备 ID 列表"""
+        try:
+            devices = sd.query_devices()
+            return [i for i, d in enumerate(devices) if d['max_input_channels'] > 0]
+        except Exception as e:
+            logger.warning(f"枚举音频设备失败: {e}")
+        return []
+
+    def _create_stream_with_device(self, device_id, samplerate, channels, dtype, callback, blocksize):
+        """使用指定设备创建输入流，可传入 device_id 或 None（使用默认）"""
+        kwargs = dict(
+            samplerate=samplerate,
+            channels=channels,
+            dtype=dtype,
+            callback=callback,
+            blocksize=blocksize,
+            latency="high",  # Windows 上提高延迟可提高兼容性
+        )
+        if device_id is not None:
+            kwargs["device"] = device_id
+        return sd.InputStream(**kwargs)
+
     def create_input_stream(self, samplerate, channels, dtype, callback, blocksize):
         """
         创建音频输入流
@@ -98,58 +121,67 @@ class AudioService:
             InputStream: 音频输入流
         """
         try:
-            # 如果 current_device 为 None，不传递 device 参数，让 sounddevice 使用默认设备
-            # 这样可以避免在 Windows 上出现设备查询错误
-            if self.current_device is None:
-                logger.info("使用系统默认音频输入设备")
-                return sd.InputStream(
-                    samplerate=samplerate, 
-                    channels=channels, 
-                    dtype=dtype,
-                    callback=callback, 
-                    blocksize=blocksize
-                )
-            else:
-                # 验证设备是否存在且可用
-                devices = sd.query_devices()
-                if self.current_device >= len(devices) or self.current_device < 0:
-                    logger.error(f"无效的设备ID: {self.current_device}，将使用默认设备")
-                    return sd.InputStream(
-                        samplerate=samplerate, 
-                        channels=channels, 
-                        dtype=dtype,
-                        callback=callback, 
-                        blocksize=blocksize
+            device_id = self.current_device
+
+            def try_open(dev_id, label):
+                try:
+                    logger.info(f"尝试打开音频流: {label}")
+                    return self._create_stream_with_device(
+                        dev_id, samplerate, channels, dtype, callback, blocksize
                     )
-                
-                device = devices[self.current_device]
-                logger.info(f"使用音频设备: {device['name']} (ID: {self.current_device})")
-                return sd.InputStream(
-                    samplerate=samplerate, 
-                    channels=channels, 
-                    dtype=dtype,
-                    callback=callback, 
-                    blocksize=blocksize, 
-                    device=self.current_device
+                except sd.PortAudioError as e:
+                    logger.warning(f"设备 {label} 打开失败: {e}")
+                    return None
+
+            if device_id is None:
+                # 1. 先尝试系统默认设备
+                stream = try_open(None, "系统默认")
+                if stream is not None:
+                    return stream
+
+                # 2. 默认不可用，逐个尝试所有输入设备
+                device_ids = self._get_all_input_device_ids()
+                if not device_ids:
+                    raise RuntimeError(
+                        "未找到可用的麦克风设备，请检查是否已连接麦克风并在 Windows 设置中启用"
+                    )
+                devices = sd.query_devices()
+                for did in device_ids:
+                    name = devices[did]["name"] if did < len(devices) else str(did)
+                    stream = try_open(did, f"{name} (ID:{did})")
+                    if stream is not None:
+                        return stream
+
+                raise RuntimeError(
+                    "所有麦克风设备均无法打开，请检查 Windows 声音设置和麦克风权限"
                 )
+
+            # 使用用户指定的设备
+            devices = sd.query_devices()
+            if device_id >= len(devices) or device_id < 0:
+                logger.error(f"无效的设备ID: {device_id}，尝试其他设备")
+                for did in self._get_all_input_device_ids():
+                    stream = try_open(did, f"ID:{did}")
+                    if stream is not None:
+                        return stream
+                raise RuntimeError("无法打开任何音频输入设备")
+
+            stream = try_open(device_id, devices[device_id]["name"])
+            if stream is not None:
+                return stream
+            # 指定设备失败，尝试其他设备
+            for did in self._get_all_input_device_ids():
+                if did == device_id:
+                    continue
+                stream = try_open(did, f"ID:{did}")
+                if stream is not None:
+                    return stream
+            raise RuntimeError("无法打开任何音频输入设备，请检查麦克风设置")
+        except sd.PortAudioError:
+            raise
         except Exception as e:
             logger.error(f"创建音频输入流失败: {str(e)}")
-            # 如果指定设备失败，尝试使用默认设备
-            if self.current_device is not None:
-                logger.info("尝试使用默认设备作为备选方案")
-                try:
-                    return sd.InputStream(
-                        samplerate=samplerate, 
-                        channels=channels, 
-                        dtype=dtype,
-                        callback=callback, 
-                        blocksize=blocksize
-                    )
-                except Exception as e2:
-                    logger.error(f"使用默认设备也失败: {str(e2)}")
-                    raise
-            else:
-                raise
+            raise
 
 # 创建全局音频服务实例
 audio_service = AudioService()

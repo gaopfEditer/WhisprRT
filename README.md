@@ -71,7 +71,11 @@
 
 3. **安装依赖**：
    ```powershell
+   uv python install 3.13  # 这个音频似乎只支持3.13
+   uv venv --python 3.13 .venv
    uv sync
+   # 启动
+   uv run python -m app.main 
    ```
 
 4. **激活虚拟环境并启动服务**：
@@ -80,6 +84,7 @@
    ```powershell
    # PowerShell
    .venv\Scripts\Activate.ps1
+   下载依赖： python -m pip install -e . 如果venv中没有pip需要先下载 python -m ensurepip --upgrade
    python -m app.main
    ```
    ```cmd
