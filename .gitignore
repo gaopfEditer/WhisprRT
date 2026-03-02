@@ -17,6 +17,7 @@ logs/
 downloads/
 eggs/
 .eggs/
+audios/
 lib/
 lib64/
 parts/
