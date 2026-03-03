@@ -2,6 +2,10 @@ import json
 import os
 import re
 import subprocess
+import sys
+import threading
+import time
+import traceback
 from pathlib import Path
 
 import requests
@@ -28,6 +32,11 @@ WHISPER_VAD_METHOD = "silero"
 QWEN_API_KEY = "sk-40fc3963ae51439db02c07d7b9995042"  # 建议实际使用时从环境变量读取
 QWEN_ENDPOINT = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation"
 QWEN_MODEL = "qwen-turbo"
+
+# 容错：单个视频最多重试次数（下载或转写失败时重试）
+MAX_RETRIES = 2
+# WhisperX 单条转写超时（秒），超时则终止子进程并重试；0 表示不限制
+TRANSCRIBE_TIMEOUT = 0
 
 
 def run_cmd(cmd: list[str], cwd: Path | None = None):
@@ -119,6 +128,8 @@ def transcribe_audio(name: str, wav_path: Path):
 
     # 启动 whisperx 子进程，流式读取 stdout，同时写入文件并打印到控制台
     print(f"\n>>> Transcribing {wav_path} -> {transcript_path}")
+    sys.stdout.flush()
+
     with open(transcript_path, "w", encoding="utf-8") as f, open(log_path, "w", encoding="utf-8") as log_f:
         process = subprocess.Popen(
             cmd,
@@ -127,15 +138,39 @@ def transcribe_audio(name: str, wav_path: Path):
             text=True,
             bufsize=1,
         )
-        # 按行读取输出，边打印边写入
         assert process.stdout is not None
-        for line in process.stdout:
-            print(line, end="")
-            f.write(line)  # subtitles 目录（临时）
-            log_f.write(line)  # logs 目录（原始完整输出）
-        process.wait()
+        read_done = threading.Event()
+        read_error: list[BaseException] = []
+
+        def read_stdout():
+            try:
+                for line in process.stdout:
+                    print(line, end="")
+                    f.write(line)
+                    log_f.write(line)
+            except Exception as e:
+                read_error.append(e)
+            finally:
+                read_done.set()
+
+        reader = threading.Thread(target=read_stdout, daemon=True)
+        reader.start()
+
+        try:
+            if TRANSCRIBE_TIMEOUT > 0:
+                process.wait(timeout=TRANSCRIBE_TIMEOUT)
+            else:
+                process.wait()
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+            raise RuntimeError(f"WhisperX 转写超时（{TRANSCRIBE_TIMEOUT} 秒），已终止")
+
+        read_done.wait(timeout=10)
+        if read_error:
+            raise read_error[0]
         if process.returncode != 0:
-            raise RuntimeError(f"WhisperX 转写失败: {process.returncode}")
+            raise RuntimeError(f"WhisperX 转写失败: returncode={process.returncode}")
 
     print(f"\n✅ 转写完成：{transcript_path}")
     print(f"✅ 原始日志已保存：{log_path}")
@@ -274,6 +309,19 @@ def refine_transcript_with_qwen(name: str, transcript_path: Path) -> Path:
     return refined_path
 
 
+def process_one(name: str, link: str) -> bool:
+    """处理单个视频，成功返回 True，失败返回 False。异常全部捕获，不向外抛出。"""
+    try:
+        wav_path = download_audio(name, link)
+        transcribe_audio(name, wav_path)
+        return True
+    except Exception as e:
+        print(f"[ERROR] 处理 {name} 失败：{e}")
+        traceback.print_exc()
+        sys.stdout.flush()
+        return False
+
+
 def main():
     ensure_dirs()
     config = load_config()
@@ -289,12 +337,22 @@ def main():
         print(f"处理视频：{name}")
         print(f"链接：{link}")
         print(f"==============================")
+        sys.stdout.flush()
 
-        try:
-            wav_path = download_audio(name, link)
-            transcribe_audio(name, wav_path)
-        except Exception as e:
-            print(f"[ERROR] 处理 {name} 失败：{e}")
+        for attempt in range(MAX_RETRIES + 1):
+            if attempt > 0:
+                print(f"\n>>> 第 {attempt + 1}/{MAX_RETRIES + 1} 次尝试：{name}")
+                sys.stdout.flush()
+            if process_one(name, link):
+                break
+            if attempt < MAX_RETRIES:
+                wait = 10
+                print(f"\n>>> {wait} 秒后重试…")
+                time.sleep(wait)
+        else:
+            print(f"[ERROR] {name} 在 {MAX_RETRIES + 1} 次尝试后仍失败，跳过")
+
+    print("\n>>> 全部处理结束")
 
 
 if __name__ == "__main__":

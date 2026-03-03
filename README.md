@@ -447,3 +447,43 @@ whisperx audio.wav --model large-v2 --language zh --output_dir subtitles --outpu
 
 > **推荐**：优先使用方法一（降级 PyTorch），这是最稳定的解决方案。
 
+
+
+# batch_whisperx_nodownload
+
+下载文字稿主要用这个：batch_whisperx_nodownload 另一个先下载再转，转2、3个就自己卡死，流程不合理
+完整流程：结合插件选择，之后生成视频列表之后使用这个转文字
+
+实现方式
+三步流水线（不落盘）：
+步骤	做什么	用到的工具
+1. 取流地址	根据 videos.json 里的链接，拿到可直接请求的音/视频流 URL	yt-dlp（只 extract_info，不下载文件）
+2. 转成模型输入	用 FFmpeg 把流解码并重采样成 16kHz、单声道、PCM，输出到 stdout	FFmpeg（管道式，Python 从 stdout 读）
+3. 转写 + 后处理	把 PCM 转成 float32 数组，用 faster-whisper 转写中文，再交给通义千问做断句/摘要	faster-whisper、requests（Qwen API）
+不下载：音频只在内存里（FFmpeg stdout → np.frombuffer → 模型），不写 audios/*.wav。
+配置：和 batch_whisperx 共用 videos.json，输出到 subtitles/、logs/、output/。
+能力边界
+支持的链接：取决于 yt-dlp 能解析的站点（YouTube、B 站等），和 yt-dlp 能力一致。
+时长：整段流会一次性读入内存并转写，超长视频（例如数小时）可能占很多内存或变慢；没有按“流式分块”边下边写。
+语言：脚本里固定为中文（language="zh"），若要多语可改参数。
+GPU：有 CUDA + cuDNN 会用 GPU，否则需设 USE_CPU=1 用 CPU；精度用 int8（可设 USE_FLOAT16=1 用 float16，需显卡支持）。
+Qwen 精排：依赖通义千问 API（网络 + API Key）；失败只影响 output/ 的精排稿，原始转写仍在 subtitles/。
+依赖：需要本机已安装 FFmpeg（并在 PATH 里），以及 Python 包：yt-dlp、faster-whisper、numpy、requests。
+如果你愿意，我可以按「实现方式 + 能力边界」整理成一段可以放进 README 或脚本开头的简短说明文字，直接贴给你复制使用。
+
+一、支持的平台（由 yt-dlp 决定）
+只要 yt-dlp 能解析并拿到流地址 的站点都支持，例如：
+YouTube、Bilibili、抖音、快手
+微博、Twitter/X、Instagram
+网易云音乐、QQ 音乐、Spotify（若 yt-dlp 支持）
+各类新闻/博客/播客站点（带视频或音频的页面）
+直链（https://xxx.mp4 / .m4a / .mp3 等）
+完整列表见：
+https://github.com/yt-dlp/yt-dlp/wiki/Supported-sites
+限制：站点改版、登录/地区限制、反爬等可能导致部分链接取不到流，和 yt-dlp 的维护情况有关。
+二、支持的音视频类型（由 FFmpeg 决定）
+容器/格式：MP4、WebM、MKV、AVI、MOV、FLV、MP3、M4A、AAC、OGG、WAV 等常见格式都能解码。
+编码：H.264/265、VP9、AV1、AAC、MP3、Opus 等常见编码都支持。
+只要有音轨：视频会被 FFmpeg 抽成 16kHz 单声道再送给 Whisper，所以“能播的网页/链接”一般都能转写。
+限制：极冷门或带强 DRM 的流，FFmpeg 可能解不了，这类无法支持。
+

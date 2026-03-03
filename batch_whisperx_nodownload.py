@@ -6,6 +6,10 @@
 
 依赖：yt-dlp, ffmpeg, faster-whisper, numpy, requests
   pip install yt-dlp faster-whisper numpy requests
+
+若报错 cudnn_ops64_9.dll / cudnnCreateTensorDescriptor：说明缺 cuDNN 或未加入 PATH，
+  可强制用 CPU 运行（较慢但无需 GPU）：运行前设置环境变量 USE_CPU=1
+  PowerShell: $env:USE_CPU="1"; python batch_whisperx_nodownload.py
 """
 import json
 import os
@@ -31,6 +35,8 @@ WHISPER_MODEL = "large-v3-turbo"
 WHISPER_LANGUAGE = "zh"
 
 def _detect_device():
+    if os.environ.get("USE_CPU", "").strip().lower() in ("1", "true", "yes"):
+        return "cpu"
     try:
         import ctranslate2
         return "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
@@ -38,7 +44,9 @@ def _detect_device():
         return "cpu"
 
 WHISPER_DEVICE = _detect_device()
-WHISPER_COMPUTE_TYPE = "float16" if WHISPER_DEVICE == "cuda" else "int8"
+# 默认用 int8 兼容更多 GPU（部分显卡不支持 float16）；需要 float16 可设环境变量 USE_FLOAT16=1
+_use_float16 = os.environ.get("USE_FLOAT16", "").strip().lower() in ("1", "true", "yes")
+WHISPER_COMPUTE_TYPE = "float16" if (WHISPER_DEVICE == "cuda" and _use_float16) else "int8"
 
 # 通义千问配置（与 batch_whisperx 相同）
 QWEN_API_KEY = os.environ.get("QWEN_API_KEY", "sk-40fc3963ae51439db02c07d7b9995042")
@@ -52,7 +60,7 @@ _whisper_model: WhisperModel | None = None
 def get_whisper_model() -> WhisperModel:
     global _whisper_model
     if _whisper_model is None:
-        print(f"\n>>> 加载 Whisper 模型: {WHISPER_MODEL} ({WHISPER_DEVICE})")
+        print(f"\n>>> 加载 Whisper 模型: {WHISPER_MODEL} ({WHISPER_DEVICE}, {WHISPER_COMPUTE_TYPE})")
         _whisper_model = WhisperModel(
             WHISPER_MODEL,
             device=WHISPER_DEVICE,
