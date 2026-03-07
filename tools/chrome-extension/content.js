@@ -34,20 +34,8 @@
   // 获取B站视频信息
   function getBilibiliVideoInfo(element) {
     try {
-      // 根据B站实际HTML结构提取
-      // 优先查找 .bili-cover-card 或 .bili-video-card__title 内的链接
-      let linkElement = element.querySelector('.bili-cover-card');
-      
-      if (!linkElement) {
-        linkElement = element.querySelector('.bili-video-card__title a');
-      }
-      
-      // 如果没找到，尝试查找包含 /video/BV 或 /video/av 的链接
-      if (!linkElement) {
-        linkElement = element.querySelector('a[href*="/video/BV"], a[href*="/video/av"]');
-      }
-
-      // 如果还是没找到，在所有链接中查找
+      // 优先查找包含 /video/BV 或 /video/av 的链接
+      let linkElement = element.querySelector('a[href*="/video/BV"], a[href*="/video/av"]');
       if (!linkElement) {
         const allLinks = element.querySelectorAll('a');
         for (const link of allLinks) {
@@ -58,21 +46,13 @@
           }
         }
       }
-
       if (!linkElement) {
-        console.log('[B站调试] 未找到链接元素，元素内容:', element.outerHTML.substring(0, 200));
         return null;
       }
 
       let href = linkElement.getAttribute('href') || '';
-      
-      if (!href) {
-        console.log('[B站调试] 链接元素的href为空');
-        return null;
-      }
-      
-      // 处理相对路径和绝对路径
-      // B站链接可能是 //www.bilibili.com/... 或 /video/...
+      if (!href) return null;
+
       if (href.startsWith('//')) {
         href = 'https:' + href;
       } else if (href.startsWith('/')) {
@@ -81,101 +61,58 @@
         href = 'https://www.bilibili.com/' + href;
       }
 
-      // 提取视频ID（BV号或av号）
       const bvMatch = href.match(/\/video\/(BV[\w]+)/);
       const avMatch = href.match(/\/video\/(av\d+)/i);
-      
-      if (bvMatch || avMatch) {
-        const videoId = bvMatch ? bvMatch[1] : avMatch[1];
-        href = `https://www.bilibili.com/video/${videoId}`;
-      } else {
-        console.log('[B站调试] 无法从链接中提取视频ID:', href);
-        return null;
-      }
+      if (!bvMatch && !avMatch) return null;
 
-      // 移除查询参数和锚点
-      const fullUrl = href.split('?')[0].split('#')[0];
+      const videoId = bvMatch ? bvMatch[1] : avMatch[1];
+      const fullUrl = `https://www.bilibili.com/video/${videoId}`;
       const title = extractBilibiliTitle(element, linkElement);
 
-      if (!title || !title.trim()) {
-        console.log('[B站调试] 无法提取标题');
-      }
-
       return {
-        title: title.trim() || '未知标题',
+        title: (title && title.trim()) ? title.trim() : '未知标题',
         link: fullUrl,
         element: element
       };
     } catch (e) {
-      console.error('[B站调试] 提取视频信息时出错:', e, element);
+      console.error('[B站] 提取视频信息出错:', e);
       return null;
     }
   }
 
-  // 提取B站标题
+  // 提取B站标题（按结构：.bili-video-card__title[title] 或 .bili-video-card__title > a 文本）
   function extractBilibiliTitle(element, linkElement) {
-    // 根据B站实际HTML结构：.bili-video-card__title 有 title 属性
-    // 这是最准确的方式，必须严格只从这个元素获取
-    const titleElement = element.querySelector('.bili-video-card__title');
-    if (titleElement) {
-      // 优先使用 title 属性（这是B站标准方式，最准确）
-      let title = titleElement.getAttribute('title');
-      if (title && title.trim()) {
-        return title.trim();
-      }
-      
-      // 如果没有 title 属性，从内部 a 标签获取文本（只获取第一个a标签）
-      const titleLink = titleElement.querySelector('a');
-      if (titleLink) {
-        title = titleLink.textContent || titleLink.innerText;
-        if (title && title.trim()) {
-          // 清理文本：移除换行、多余空格
-          title = title.replace(/\s+/g, ' ').trim();
-          // 过滤掉明显不是标题的内容（如播放量、时长等）
-          if (!title.match(/^\d+[\.\d]*[万千]?\s*[\d:]+$/)) {
-            return title;
-          }
-        }
-      }
-      
-      // 如果a标签的文本也不对，尝试直接获取titleElement的文本
-      // 但要排除包含"添加至"、"稍后再看"等按钮文本
-      title = titleElement.textContent || titleElement.innerText;
-      if (title && title.trim()) {
-        // 清理文本：移除换行、多余空格
-        title = title.replace(/\s+/g, ' ').trim();
-        // 过滤掉明显不是标题的内容
-        if (!title.includes('添加至') && 
-            !title.includes('稍后再看') && 
-            !title.match(/^\d+[\.\d]*[万千]?\s*[\d:]+$/)) {
-          return title;
-        }
-      }
+    const reject = (t) => !t || !t.trim() || t.includes('添加至') || t.includes('稍后再看') || /^\d+[.\d]*[万千]?\s*[\d:]+$/.test(t);
+
+    // 1) 按你提供的结构：.bili-video-card__title 的 title 属性
+    const titleEl = element.querySelector('.bili-video-card__title');
+    if (titleEl) {
+      let t = titleEl.getAttribute('title');
+      if (t && !reject(t)) return t.trim();
+      const innerA = titleEl.querySelector('a');
+      t = (innerA && (innerA.textContent || innerA.innerText)) ? (innerA.textContent || innerA.innerText).replace(/\s+/g, ' ').trim() : '';
+      if (t && !reject(t)) return t;
+      t = (titleEl.textContent || titleEl.innerText || '').replace(/\s+/g, ' ').trim();
+      if (t && !reject(t)) return t;
     }
 
-    // 如果 .bili-video-card__title 不存在或提取失败，尝试其他方式
-    // 但这是备用方案，应该很少用到
-    if (linkElement && linkElement.classList.contains('bili-cover-card')) {
-      // 如果链接元素是 .bili-cover-card，尝试从父容器查找标题
-      const parentTitle = linkElement.closest('.bili-video-card__wrap')?.querySelector('.bili-video-card__title');
-      if (parentTitle) {
-        let title = parentTitle.getAttribute('title');
-        if (title && title.trim()) {
-          return title.trim();
-        }
-      }
+    // 2) 任意 [class*="title"]
+    for (const el of element.querySelectorAll('[class*="title"]')) {
+      const t = (el.getAttribute('title') || el.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!reject(t) && t.length > 2) return t;
     }
 
-    // 最后备用：从链接元素的title属性获取（但通常链接元素没有title）
+    // 3) 链接的 title（如 a.bili-cover-card 的 title）
     if (linkElement) {
-      let title = linkElement.getAttribute('title');
-      if (title && title.trim() && 
-          !title.includes('添加至') && 
-          !title.includes('稍后再看')) {
-        return title.trim();
-      }
+      const t = (linkElement.getAttribute('title') || '').trim();
+      if (!reject(t)) return t;
     }
 
+    // 4) 卡片内第一段较长文本
+    for (const node of element.querySelectorAll('a, span, p, div[class*="desc"], div[class*="info"]')) {
+      const t = (node.textContent || '').replace(/\s+/g, ' ').trim();
+      if (t.length >= 3 && t.length <= 120 && !reject(t) && !/^[\d:\s]+$/.test(t)) return t;
+    }
     return '';
   }
 
@@ -434,52 +371,94 @@
     }
   }
 
+  // 获取 B 站视频卡片容器（按创作中心/上传页结构：upload-video-card__left > bili-video-card > bili-video-card__wrap）
+  function getBilibiliVideoContainers() {
+    const seenHref = new Set();
+
+    // 1) 按你提供的结构优先：.bili-video-card__wrap（封面+标题的容器，搜索页与创作中心通用）
+    let list = [];
+    document.querySelectorAll('.bili-video-card__wrap').forEach(el => {
+      const link = el.querySelector('a[href*="/video/BV"], a[href*="/video/av"]');
+      if (!link || el.querySelector(`.${SELECTOR_BUTTON_ID}`)) return;
+      const href = normalizeBilibiliHref(link.getAttribute('href'));
+      const key = href;
+      if (seenHref.has(key)) return;
+      seenHref.add(key);
+      list.push(el);
+    });
+    if (list.length > 0) return list;
+
+    // 2) 创作中心/上传管理页：.upload-video-card__left（每块一个视频）
+    document.querySelectorAll('.upload-video-card__left').forEach(el => {
+      const link = el.querySelector('a[href*="/video/BV"], a[href*="/video/av"]');
+      if (!link || el.querySelector(`.${SELECTOR_BUTTON_ID}`)) return;
+      const href = normalizeBilibiliHref(link.getAttribute('href'));
+      const key = href;
+      if (seenHref.has(key)) return;
+      seenHref.add(key);
+      list.push(el);
+    });
+    if (list.length > 0) return list;
+
+    // 3) 其他已知卡片类
+    const knownSelectors = [
+      '.bili-video-card',
+      '[class*="bili-video-card__wrap"]',
+      '[class*="bili-video-card"]',
+      '.video-card',
+      '.feed-card',
+      '[class*="feed-card"]'
+    ];
+    for (const sel of knownSelectors) {
+      try {
+        document.querySelectorAll(sel).forEach(el => {
+          const link = el.querySelector('a[href*="/video/BV"], a[href*="/video/av"]');
+          if (!link || el.querySelector(`.${SELECTOR_BUTTON_ID}`)) return;
+          const href = normalizeBilibiliHref(link.getAttribute('href'));
+          if (seenHref.has(href)) return;
+          seenHref.add(href);
+          list.push(el);
+        });
+        if (list.length > 0) return list;
+      } catch (e) { /* 忽略无效选择器 */ }
+    }
+
+    // 4) 回退：从所有 BV/av 链接反推卡片容器
+    document.querySelectorAll('a[href*="/video/BV"], a[href*="/video/av"]').forEach(link => {
+      const href = normalizeBilibiliHref(link.getAttribute('href'));
+      if (seenHref.has(href)) return;
+      seenHref.add(href);
+
+      let container = link.closest('.bili-video-card__wrap, .bili-video-card, .upload-video-card__left, [class*="bili-video-card"], .video-card, .feed-card');
+      if (!container) {
+        container = link.closest('li, div[class*="card"], div[class*="item"], article, section');
+      }
+      if (!container) {
+        container = link.closest('div[class*="cover"], div[class*="info"]')?.parentElement || link.parentElement?.parentElement;
+      }
+      if (container && container !== document.body && !container.querySelector(`.${SELECTOR_BUTTON_ID}`)) {
+        list.push(container);
+      }
+    });
+    return list;
+  }
+
+  function normalizeBilibiliHref(href) {
+    if (!href) return '';
+    if (href.startsWith('//')) href = 'https:' + href;
+    else if (href.startsWith('/')) href = 'https://www.bilibili.com' + href;
+    const m = href.match(/\/video\/(BV[\w]+|av\d+)/i);
+    return m ? m[0] : href.split('?')[0].split('#')[0];
+  }
+
   // 为视频项添加选择按钮
   function addButtonsToVideos() {
     const url = window.location.href;
     let videoItems = [];
 
     if (url.includes('bilibili.com')) {
-      // B站视频列表选择器（根据实际HTML结构）
-      // 优先使用 .bili-video-card__wrap（这是B站视频卡片的标准容器）
-      videoItems = document.querySelectorAll('.bili-video-card__wrap');
-      
-      console.log(`[B站调试] 找到 ${videoItems.length} 个 .bili-video-card__wrap 元素`);
-      
-      // 如果没找到，尝试其他选择器
-      if (videoItems.length === 0) {
-        videoItems = document.querySelectorAll(
-          '.bili-video-card, ' +
-          '[class*="bili-video-card__wrap"], ' +
-          '[class*="bili-video-card"]'
-        );
-        console.log(`[B站调试] 使用备用选择器找到 ${videoItems.length} 个元素`);
-      }
-
-      // 如果还是没找到，使用更通用的方法：查找所有包含BV链接的元素
-      if (videoItems.length === 0) {
-        const allLinks = document.querySelectorAll('a[href*="/video/BV"], a[href*="/video/av"]');
-        console.log(`[B站调试] 找到 ${allLinks.length} 个视频链接`);
-        
-        const uniqueContainers = new Set();
-        allLinks.forEach(link => {
-          // 向上查找 .bili-video-card__wrap 容器
-          let container = link.closest('.bili-video-card__wrap');
-          if (!container) {
-            // 如果找不到，向上查找其他合适的容器
-            container = link.closest('li, div[class*="card"], div[class*="item"], article, section');
-          }
-          if (!container) {
-            // 如果还是找不到，使用父元素的父元素
-            container = link.parentElement?.parentElement;
-          }
-          if (container && !container.querySelector(`.${SELECTOR_BUTTON_ID}`)) {
-            uniqueContainers.add(container);
-          }
-        });
-        videoItems = Array.from(uniqueContainers);
-        console.log(`[B站调试] 通过链接查找找到 ${videoItems.length} 个容器`);
-      }
+      videoItems = getBilibiliVideoContainers();
+      console.log(`[B站] 找到 ${videoItems.length} 个视频卡片`);
     } else if (url.includes('youtube.com')) {
       // YouTube视频列表选择器
       videoItems = document.querySelectorAll(
@@ -559,14 +538,14 @@
       // 检查是否有新的视频卡片添加
       const hasNewVideoCards = mutations.some(mutation => {
         return Array.from(mutation.addedNodes).some(node => {
-          if (node.nodeType !== 1) return false; // 不是元素节点
-          return node.matches && (
-            node.matches('.bili-video-card__wrap') ||
-            node.querySelector && node.querySelector('.bili-video-card__wrap')
-          );
+          if (node.nodeType !== 1) return false;
+          const el = node.nodeType === 1 ? node : node.parentElement;
+          if (!el || !el.querySelector) return false;
+          return el.matches?.('.bili-video-card__wrap, .bili-video-card, .upload-video-card__left, [class*="bili-video-card"], .video-card, .feed-card, [class*="feed-card"]') ||
+            el.querySelector('a[href*="/video/BV"], a[href*="/video/av"]');
         });
       });
-      
+
       if (hasNewVideoCards || location.href.includes('bilibili.com')) {
         // 防抖：避免频繁执行
         clearTimeout(addButtonsTimeout);
