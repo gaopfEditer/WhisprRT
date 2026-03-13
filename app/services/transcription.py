@@ -14,6 +14,7 @@ from app.config import (
 )
 from app.services.whisper import whisper_service
 from app.services.audio import audio_service
+from app.services.keyword_alert import keyword_alert_service
 
 class TranscriptionService:
     """语音转写服务类"""
@@ -38,6 +39,9 @@ class TranscriptionService:
         self.silence_threshold = config["silence_threshold"]
         self.zcr_threshold = config["zcr_threshold"]
         self.hallucination_patterns = HALLUCINATION_PATTERNS
+        
+        # 关键字预警回调
+        keyword_alert_service.set_alert_callback(self._on_keyword_alert)
     
     def audio_callback(self, indata, frames, time_info, status):
         """
@@ -380,6 +384,81 @@ class TranscriptionService:
         
         self.display_mode = mode
         return {"status": "success", "message": f"已切换到{self.display_mode}模式"}
+    
+    def _on_keyword_alert(self, alert_record):
+        """
+        关键字预警回调函数
+        
+        Args:
+            alert_record: 预警记录字典
+        """
+        # 向所有 WebSocket 客户端广播预警
+        asyncio.run(self.broadcast_to_websockets('keyword_alert', {
+            'text': alert_record['text'],
+            'matched_keywords': alert_record['matched_keywords'],
+            'timestamp': alert_record['timestamp'],
+            'keyword_count': alert_record['keyword_count']
+        }))
+    
+    def set_keywords(self, keywords):
+        """
+        设置预警关键字
+        
+        Args:
+            keywords: 关键字列表
+            
+        Returns:
+            dict: 操作状态
+        """
+        keyword_alert_service.set_keywords(keywords)
+        return {"status": "success", "message": f"已设置 {len(keywords)} 个预警关键字"}
+    
+    def add_keyword(self, keyword):
+        """
+        添加预警关键字
+        
+        Args:
+            keyword: 关键字
+            
+        Returns:
+            dict: 操作状态
+        """
+        keyword_alert_service.add_keyword(keyword)
+        return {"status": "success", "message": f"已添加关键字：{keyword}"}
+    
+    def remove_keyword(self, keyword):
+        """
+        移除预警关键字
+        
+        Args:
+            keyword: 关键字
+            
+        Returns:
+            dict: 操作状态
+        """
+        keyword_alert_service.remove_keyword(keyword)
+        return {"status": "success", "message": f"已移除关键字：{keyword}"}
+    
+    def get_keywords(self):
+        """
+        获取当前预警关键字列表
+        
+        Returns:
+            dict: 关键字列表
+        """
+        return {"status": "success", "keywords": keyword_alert_service.keywords}
+    
+    def get_alert_history(self, limit=10):
+        """
+        获取预警历史记录
+        
+        Args:
+            limit: 返回数量限制
+            
+        Returns:
+            dict: 预警记录列表
+        """
+        return {"status": "success", "alerts": keyword_alert_service.get_alert_history(limit)}
 
 # 创建全局转写服务实例
 transcription_service = TranscriptionService()

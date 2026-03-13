@@ -98,47 +98,57 @@ def ensure_dirs():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def get_stream_url(link: str) -> str:
-    """使用 yt-dlp 获取音视频流的真实 URL，不下载"""
+def get_stream_url(link: str) -> tuple[str, float | None]:
+    """使用 yt-dlp 获取音视频流的真实 URL 与时长（秒），不下载。返回 (url, duration_sec)，duration 可能为 None。"""
     ydl_opts = {
         "format": "bestaudio/best",
         "quiet": True,
         "no_warnings": True,
         "extract_flat": False,
     }
-    # 抖音等需要登录态，从浏览器带 cookie（抖音 cookie 易过期，需在浏览器里先打开链接刷新）
     douyin_cookie_hint = (
-        "抖音需要新鲜 Cookie。请先在 Chrome 里打开该链接并刷新页面，再重新运行本脚本。"
+        "抖音仅支持 Cookie 文件。请用 Chrome 扩展「Get cookies.txt LOCALLY」或「cookies.txt」"
+        "在打开该抖音链接后导出，保存为项目目录下的 batch_deal_dy_cookie.txt（或设置 DOUYIN_COOKIES_FILE）。"
+        "若仍报 Fresh cookies，请：1) 在 Chrome 打开该链接并播放/刷新；2) 不关页面，立即用扩展导出；3) 覆盖 batch_deal_dy_cookie.txt 后重试。"
+        "也可尝试升级 yt-dlp：uv pip install -U yt-dlp"
     )
     if "douyin" in link.lower():
-        # 按顺序尝试多个浏览器，哪个有可用 cookie 就用哪个
-        for browser in ("chrome", "edge", "chromium", "safari"):
-            opts = {**ydl_opts, "cookiesfrombrowser": (browser,)}
-            try:
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(link, download=False)
-                    if info is None:
-                        continue
-                    url = info.get("url")
-                    if not url:
-                        formats = info.get("formats") or []
-                        for f in formats:
-                            u = f.get("url")
-                            if u and (f.get("vcodec") == "none" or f.get("acodec") != "none"):
-                                url = u
-                                break
-                        if not url and formats:
-                            url = next((f.get("url") for f in formats if f.get("url")), None)
-                    if url:
-                        return url
-            except yt_dlp.utils.DownloadError as e:
-                err_msg = str(e).lower()
-                if "fresh cookies" in err_msg or "cookies" in err_msg:
-                    if browser == "safari":
-                        raise RuntimeError(f"{douyin_cookie_hint}\n原始错误: {e}") from e
-                    continue
-                raise
-        raise RuntimeError(douyin_cookie_hint)
+        cookie_file = os.environ.get("DOUYIN_COOKIES_FILE", "").strip()
+        if not cookie_file:
+            default_cookie = CONFIG_PATH.parent / "batch_deal_dy_cookie.txt"
+            if default_cookie.is_file():
+                cookie_file = str(default_cookie)
+        if not cookie_file or not os.path.isfile(cookie_file):
+            raise RuntimeError(
+                f"未找到抖音 Cookie 文件。请将 cookies.txt 保存为 batch_deal_dy_cookie.txt 放到项目目录，或设置 DOUYIN_COOKIES_FILE。\n{douyin_cookie_hint}"
+            )
+        # 设备模拟 + Cookie 文件，提高抖音解析成功率
+        opts = {
+            **ydl_opts,
+            "cookiefile": cookie_file,
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "extractor_args": {"douyin": ["device_id=73000000000", "iid=1234567890"]},
+        }
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(link, download=False)
+                if info is None:
+                    raise RuntimeError("无法获取视频信息")
+                url = info.get("url")
+                if not url:
+                    formats = info.get("formats") or []
+                    for f in formats:
+                        u = f.get("url")
+                        if u and (f.get("vcodec") == "none" or f.get("acodec") != "none"):
+                            url = u
+                            break
+                    if not url and formats:
+                        url = next((f.get("url") for f in formats if f.get("url")), None)
+                if url:
+                    duration = info.get("duration")
+                    return (url, float(duration) if duration is not None else None)
+        except Exception as e:
+            raise RuntimeError(f"{douyin_cookie_hint}\n原始错误: {e}") from e
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(link, download=False)
         if info is None:
@@ -155,30 +165,61 @@ def get_stream_url(link: str) -> str:
                 url = next((f.get("url") for f in formats if f.get("url")), None)
         if not url:
             raise RuntimeError(f"无法获取流地址: {link}")
-        return url
+        duration = info.get("duration")
+        return (url, float(duration) if duration is not None else None)
 
 
-def stream_to_audio_array(stream_url: str) -> np.ndarray:
+def stream_to_audio_array(stream_url: str, duration_sec: float | None = None) -> np.ndarray:
     """
-    使用 FFmpeg 将流转为 16kHz 单声道 float32 数组（Whisper 所需格式）
-    输出到 stdout，Python 读取并转换
+    使用 FFmpeg 将流转为 16kHz 单声道 float32 数组（Whisper 所需格式）。
+    若提供 duration_sec，会按读取字节数估算并打印转码进度。
     """
     cmd = [
         get_ffmpeg_path(),
         "-hide_banner", "-loglevel", "error",
+    ]
+    if "bilibili" in stream_url or "bilivideo" in stream_url:
+        cmd.extend([
+            "-headers",
+            "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\nReferer: https://www.bilibili.com/\r\n",
+        ])
+    cmd.extend([
         "-i", stream_url,
         "-f", "s16le",
         "-acodec", "pcm_s16le",
         "-ar", "16000",
         "-ac", "1",
         "-",
-    ]
+    ])
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    raw_bytes, stderr = process.communicate()
+    # 已知时长时按字节估算进度：16kHz * 2 字节 = 32000 字节/秒
+    chunk_size = 256 * 1024
+    expected_bytes = int(duration_sec * 32000) if duration_sec and duration_sec > 0 else None
+    raw_chunks = []
+    bytes_read = 0
+    last_pct = -1
+
+    if process.stdout:
+        while True:
+            chunk = process.stdout.read(chunk_size)
+            if not chunk:
+                break
+            raw_chunks.append(chunk)
+            bytes_read += len(chunk)
+            if expected_bytes and expected_bytes > 0:
+                pct = min(100, int(bytes_read / expected_bytes * 100))
+                if pct >= last_pct + 5 or pct == 100:
+                    print(f"\r    FFmpeg 转码: {pct}%", end="", flush=True)
+                    last_pct = pct
+    raw_bytes = b"".join(raw_chunks)
+    stderr = process.stderr.read() if process.stderr else b""
+    process.wait()
+    if last_pct >= 0:
+        print()
     if process.returncode != 0:
         err = stderr.decode("utf-8", errors="replace") if stderr else ""
         raise RuntimeError(f"FFmpeg 转码失败 (code={process.returncode}): {err}")
@@ -191,18 +232,32 @@ def stream_to_audio_array(stream_url: str) -> np.ndarray:
     return audio
 
 
-def transcribe_audio_array(audio: np.ndarray) -> list[tuple[float, float, str]]:
-    """使用 faster-whisper 转写，返回 [(start, end, text), ...]"""
+def transcribe_audio_array(
+    audio: np.ndarray,
+    progress_callback=None,
+) -> list[tuple[float, float, str]]:
+    """使用 faster-whisper 转写，返回 [(start, end, text), ...]。可选 progress_callback(end_sec, total_sec, n_segments) 用于进度。"""
     model = get_whisper_model()
-    segments, _ = model.transcribe(
+    total_sec = len(audio) / 16000.0
+    segments_gen, _ = model.transcribe(
         audio,
         language=WHISPER_LANGUAGE,
         beam_size=1,
         vad_filter=True,
     )
     result = []
-    for seg in segments:
+    last_pct = -1
+    for seg in segments_gen:
         result.append((seg.start, seg.end, (seg.text or "").strip()))
+        if progress_callback:
+            progress_callback(seg.end, total_sec, len(result))
+        elif total_sec > 0:
+            pct = min(100, int(seg.end / total_sec * 100))
+            if pct >= last_pct + 5 or pct == 100:
+                print(f"\r    转写进度: {pct}% ({len(result)} 段)", end="", flush=True)
+                last_pct = pct
+    if last_pct >= 0:
+        print()
     return result
 
 
@@ -216,14 +271,16 @@ def stream_transcribe(name: str, link: str) -> Path:
     log_path = LOG_DIR / f"{name}.txt"
 
     print(f"\n>>> 获取流地址: {link}")
-    stream_url = get_stream_url(link)
+    stream_url, duration_sec = get_stream_url(link)
+    if duration_sec is not None:
+        print(f"    视频时长约 {duration_sec:.0f} 秒")
 
     print(f">>> FFmpeg 转码中（16k 单声道）...")
-    audio = stream_to_audio_array(stream_url)
+    audio = stream_to_audio_array(stream_url, duration_sec)
     duration_sec = len(audio) / 16000
     print(f"    音频时长约 {duration_sec:.1f} 秒")
 
-    print(f">>> Transcribing -> {transcript_path}")
+    print(f">>> 转写中 -> {transcript_path}")
     segments = transcribe_audio_array(audio)
 
     # 生成与 WhisperX 类似的输出格式，便于后续 Qwen 处理
@@ -351,6 +408,12 @@ def main():
         print(f"处理视频：{name}")
         print(f"链接：{link}")
         print(f"{'='*40}")
+
+        # 若 output 中已存在该名称的成品稿，则跳过
+        output_file = OUTPUT_DIR / f"{name}.txt"
+        if output_file.exists():
+            print(f"✅ 已存在，跳过：{output_file}")
+            continue
 
         try:
             transcript_path = stream_transcribe(name, link)
