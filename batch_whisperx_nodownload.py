@@ -14,10 +14,26 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
 import numpy as np
+
+
+def get_ffmpeg_path() -> str:
+    """解析 ffmpeg 可执行路径（PATH 或常见安装位置）。"""
+    exe = shutil.which("ffmpeg")
+    if exe:
+        return exe
+    for path in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"):
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    raise FileNotFoundError(
+        "未找到 ffmpeg。请安装：macOS 用 brew install ffmpeg，Windows 从 https://ffmpeg.org 下载并加入 PATH"
+    )
+
+
 import requests
 import yt_dlp
 from faster_whisper import WhisperModel
@@ -90,11 +106,43 @@ def get_stream_url(link: str) -> str:
         "no_warnings": True,
         "extract_flat": False,
     }
+    # 抖音等需要登录态，从浏览器带 cookie（抖音 cookie 易过期，需在浏览器里先打开链接刷新）
+    douyin_cookie_hint = (
+        "抖音需要新鲜 Cookie。请先在 Chrome 里打开该链接并刷新页面，再重新运行本脚本。"
+    )
+    if "douyin" in link.lower():
+        # 按顺序尝试多个浏览器，哪个有可用 cookie 就用哪个
+        for browser in ("chrome", "edge", "chromium", "safari"):
+            opts = {**ydl_opts, "cookiesfrombrowser": (browser,)}
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(link, download=False)
+                    if info is None:
+                        continue
+                    url = info.get("url")
+                    if not url:
+                        formats = info.get("formats") or []
+                        for f in formats:
+                            u = f.get("url")
+                            if u and (f.get("vcodec") == "none" or f.get("acodec") != "none"):
+                                url = u
+                                break
+                        if not url and formats:
+                            url = next((f.get("url") for f in formats if f.get("url")), None)
+                    if url:
+                        return url
+            except yt_dlp.utils.DownloadError as e:
+                err_msg = str(e).lower()
+                if "fresh cookies" in err_msg or "cookies" in err_msg:
+                    if browser == "safari":
+                        raise RuntimeError(f"{douyin_cookie_hint}\n原始错误: {e}") from e
+                    continue
+                raise
+        raise RuntimeError(douyin_cookie_hint)
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(link, download=False)
         if info is None:
             raise RuntimeError(f"无法获取视频信息: {link}")
-        # 优先使用 info['url']（yt-dlp 解析后的直接链接）
         url = info.get("url")
         if not url:
             formats = info.get("formats") or []
@@ -116,7 +164,7 @@ def stream_to_audio_array(stream_url: str) -> np.ndarray:
     输出到 stdout，Python 读取并转换
     """
     cmd = [
-        "ffmpeg",
+        get_ffmpeg_path(),
         "-hide_banner", "-loglevel", "error",
         "-i", stream_url,
         "-f", "s16le",
