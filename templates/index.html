@@ -264,6 +264,14 @@
         .card.main-card {
             min-height: 700px;
         }
+
+        .keyword-alert-toast {
+            animation: keyword-pulse 0.5s ease-in-out 3;
+        }
+        @keyframes keyword-pulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.1); }
+            50% { box-shadow: 0 0 0 8px rgba(220, 53, 69, 0.3); }
+        }
     </style>
 </head>
 <body>
@@ -355,6 +363,16 @@
                                 <label class="btn btn-outline-primary" for="transcriptMode">连续显示</label>
                             </div>
                         </div>
+
+                        <hr>
+                        <div class="form-group">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="keywordAlertEnabled" onchange="toggleKeywordAlert()">
+                                <label class="form-check-label" for="keywordAlertEnabled">关键词告警</label>
+                            </div>
+                            <label for="keywordInput" class="form-label mt-2">关键词列表（每行一个，命中时弹窗+声音提醒）</label>
+                            <textarea id="keywordInput" class="form-control" rows="3" placeholder="例如：&#10;重要&#10;紧急&#10;注意"></textarea>
+                        </div>
                     </div>
                 </div>
                 
@@ -406,9 +424,12 @@
         let defaultDeviceId = null;
         let transcriptList = [];
         let currentMode = "segments"; // 默认分段显示
+        let keywordAlertEnabled = false;
+        let keywordList = [];
         
         // 持久化存储的key
         const STORAGE_KEY = 'whisprrt_transcript_list';
+        const KEYWORD_ALERT_KEY = 'whisprrt_keyword_alert';
         
         // 从localStorage加载转写记录
         function loadTranscriptFromStorage() {
@@ -444,6 +465,81 @@
                 localStorage.removeItem(STORAGE_KEY);
             } catch (error) {
                 console.error('清除本地存储的转写记录失败:', error);
+            }
+        }
+        
+        // 加载关键词告警配置
+        function loadKeywordAlertFromStorage() {
+            try {
+                const stored = localStorage.getItem(KEYWORD_ALERT_KEY);
+                if (stored) {
+                    const cfg = JSON.parse(stored);
+                    keywordAlertEnabled = !!cfg.enabled;
+                    keywordList = Array.isArray(cfg.keywords) ? cfg.keywords : [];
+                    document.getElementById('keywordAlertEnabled').checked = keywordAlertEnabled;
+                    document.getElementById('keywordInput').value = keywordList.join('\n');
+                }
+            } catch (error) {
+                console.error('加载关键词告警配置失败:', error);
+            }
+        }
+        
+        // 保存关键词告警配置
+        function saveKeywordAlertToStorage() {
+            const text = document.getElementById('keywordInput').value || '';
+            keywordList = text.split(/[\r\n]+/).map(k => k.trim()).filter(k => k.length > 0);
+            keywordAlertEnabled = document.getElementById('keywordAlertEnabled').checked;
+            try {
+                localStorage.setItem(KEYWORD_ALERT_KEY, JSON.stringify({
+                    enabled: keywordAlertEnabled,
+                    keywords: keywordList
+                }));
+            } catch (error) {
+                console.error('保存关键词告警配置失败:', error);
+            }
+        }
+        
+        // 切换关键词告警开关
+        function toggleKeywordAlert() {
+            saveKeywordAlertToStorage();
+            keywordAlertEnabled = document.getElementById('keywordAlertEnabled').checked;
+            if (keywordAlertEnabled && 'Notification' in window && Notification.permission === 'default') {
+                Notification.requestPermission();
+            }
+        }
+        
+        // 播放告警声音（短促提示音）
+        function playAlertSound() {
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.frequency.value = 880;
+                osc.type = 'sine';
+                gain.gain.setValueAtTime(0.3, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.2);
+                osc.start(ctx.currentTime);
+                osc.stop(ctx.currentTime + 0.2);
+            } catch (e) {
+                console.warn('播放告警声音失败:', e);
+            }
+        }
+        
+        // 检测关键词并触发告警
+        function checkKeywordAndAlert(text) {
+            if (!keywordAlertEnabled || !text) return;
+            const textarea = document.getElementById('keywordInput');
+            const list = (textarea && textarea.value || '').split(/[\r\n]+/).map(k => k.trim()).filter(k => k.length > 0);
+            if (list.length === 0) return;
+            const hit = list.find(k => text.includes(k));
+            if (hit) {
+                playAlertSound();
+                showToast(`⚠ 关键词告警：命中「${hit}」`, 'warning', true);
+                if ('Notification' in window && Notification.permission === 'granted') {
+                    new Notification('WhisprRT 关键词告警', { body: `转写内容命中关键词：${hit}` });
+                }
             }
         }
         
@@ -625,6 +721,10 @@
         window.addEventListener('load', function() {
             // 先从本地存储恢复转写记录
             loadTranscriptFromStorage();
+            // 加载关键词告警配置
+            loadKeywordAlertFromStorage();
+            // 关键词输入框失焦时保存
+            document.getElementById('keywordInput').addEventListener('blur', saveKeywordAlertToStorage);
             // 然后连接WebSocket
             connectWebSocket();
         });
@@ -634,6 +734,8 @@
          * @param {Object} data - 转写数据
          */
         function handleTranscription(data) {
+            // 关键词告警检测（在新文本入库前）
+            checkKeywordAndAlert(data.text);
             // 只维护分段列表
             transcriptList.push({
                 text: data.text,
@@ -691,15 +793,17 @@
         }
         
         // 显示通知
-        function showToast(message, type = 'info') {
+        function showToast(message, type = 'info', isAlert = false) {
             const toastContainer = document.querySelector('.toast-container');
             const toast = document.createElement('div');
-            toast.className = `toast show bg-${type === 'error' ? 'danger' : type === 'success' ? 'success' : 'info'} text-white`;
+            const bgClass = type === 'error' ? 'danger' : type === 'success' ? 'success' : type === 'warning' ? 'warning' : 'info';
+            toast.className = `toast show bg-${bgClass} text-${bgClass === 'warning' ? 'dark' : 'white'}${isAlert ? ' keyword-alert-toast' : ''}`;
             toast.style.marginBottom = '10px';
             
+            const titleMap = { error: '错误', success: '成功', warning: '告警', info: '提示' };
             toast.innerHTML = `
                 <div class="toast-header">
-                    <strong class="me-auto">${type === 'error' ? '错误' : type === 'success' ? '成功' : '提示'}</strong>
+                    <strong class="me-auto">${titleMap[type] || '提示'}</strong>
                     <button type="button" class="btn-close" onclick="this.parentElement.parentElement.remove()"></button>
                 </div>
                 <div class="toast-body">
@@ -709,10 +813,10 @@
             
             toastContainer.appendChild(toast);
             
-            // 5秒后自动关闭
+            // 告警类 toast 保留更久
             setTimeout(() => {
                 toast.remove();
-            }, 5000);
+            }, isAlert ? 8000 : 5000);
         }
 
         // 更新状态指示器
