@@ -428,6 +428,10 @@
         let currentMode = "segments"; // 默认分段显示
         let keywordAlertEnabled = false;
         let keywordList = [];
+        /** 当前页面生命周期内仅自动开始转写一次（避免 WebSocket 重连后反复启动） */
+        let autoStartTranscriptionDone = false;
+        /** 首次 WebSocket 连通后自动开始转写；重连后不再自动开始 */
+        let autoStartTranscriptionOnConnect = true;
         
         // 持久化存储的key
         const STORAGE_KEY = 'whisprrt_transcript_list';
@@ -587,8 +591,15 @@
                 isConnected = true;
                 showToast('已连接到服务器', 'success');
                 
-                // 加载音频设备列表
-                loadAudioDevices();
+                // 加载音频设备列表；完成后首次连接时自动开始转写
+                loadAudioDevices()
+                    .then(function() {
+                        if (!autoStartTranscriptionDone && !isRunning) {
+                            autoStartTranscriptionDone = true;
+                            startListening();
+                        }
+                    })
+                    .catch(function() { /* 设备加载失败时不自动开始 */ });
             };
             
             // 接收消息的处理
@@ -642,13 +653,13 @@
          * 加载可用的音频输入设备
          */
         function loadAudioDevices() {
-            fetch('/audio_devices')
+            return fetch('/audio_devices')
                 .then(response => response.json())
                 .then(data => {
                     if (data.status === 'error') {
                         showToast(data.message, 'error');
                         deviceInfo.textContent = '获取音频设备失败';
-                        return;
+                        throw new Error(data.message || 'audio_devices error');
                     }
                     
                     audioDevices = data.devices;
@@ -684,6 +695,7 @@
                     console.error('获取音频设备失败:', error);
                     showToast('获取音频设备失败，请刷新页面重试', 'error');
                     deviceInfo.textContent = '获取音频设备失败';
+                    throw error;
                 });
         }
         
@@ -718,7 +730,7 @@
             if (isRunning) {
                 showToast('请先停止转写再切换音频设备', 'info');
                 // 恢复之前的选择
-                loadAudioDevices();
+                loadAudioDevices().catch(function() {});
                 return;
             }
             
@@ -737,13 +749,13 @@
                     } else {
                         showToast(data.message, 'error');
                         // 恢复之前的选择
-                        loadAudioDevices();
+                        loadAudioDevices().catch(function() {});
                     }
                 })
                 .catch(error => {
                     showToast('请求错误: ' + error, 'error');
                     // 恢复之前的选择
-                    loadAudioDevices();
+                    loadAudioDevices().catch(function() {});
                 });
         }
         
