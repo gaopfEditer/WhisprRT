@@ -11,14 +11,18 @@
   可强制用 CPU 运行（较慢但无需 GPU）：运行前设置环境变量 USE_CPU=1
   PowerShell: $env:USE_CPU="1"; python batch_whisperx_nodownload.py
 """
+import argparse
+import asyncio
 import json
 import os
 import re
 import shutil
 import subprocess
+import traceback
 from pathlib import Path
 
 import numpy as np
+import websockets
 
 
 def get_ffmpeg_path() -> str:
@@ -45,6 +49,8 @@ CONFIG_PATH = Path("videos.json")
 TRANSCRIPT_DIR = Path("subtitles")
 LOG_DIR = Path("logs")
 OUTPUT_DIR = Path("output")
+REALTIME_HOST = "127.0.0.1"
+REALTIME_PORT = 3333
 
 # faster-whisper 参数
 WHISPER_MODEL = "large-v3-turbo"
@@ -393,7 +399,85 @@ def refine_transcript_with_qwen(name: str, transcript_path: Path) -> Path:
     return refined_path
 
 
-def main():
+def process_item_once(item: dict) -> dict:
+    """处理单个任务（一次尝试），返回包含文字稿的结果。"""
+    name = item.get("name")
+    link = item.get("link")
+    if not name or not link:
+        raise ValueError(f"任务缺少 name/link 字段: {item}")
+
+    transcript_path = stream_transcribe(name, link)
+    raw_text = transcript_path.read_text(encoding="utf-8")
+    plain_text = extract_plain_text_from_transcript(raw_text)
+
+    refined_text = None
+    refined_path = None
+    try:
+        refined_path_obj = refine_transcript_with_qwen(name, transcript_path)
+        refined_path = str(refined_path_obj)
+        refined_text = refined_path_obj.read_text(encoding="utf-8")
+    except Exception as e:
+        # AI 精排失败不影响主流程
+        print(f"⚠ AI 处理失败（跳过）：{e}")
+
+    result = {
+        **item,
+        "status": "success",
+        "transcript": plain_text,
+        "raw_transcript": raw_text,
+        "refined_text": refined_text,
+        "transcript_path": str(transcript_path),
+        "refined_path": refined_path,
+    }
+    return result
+
+
+def process_item_with_retry(item: dict, retries: int = 3) -> dict:
+    """处理单个任务，失败最多重试 retries 次（总次数=1+retries）。"""
+    last_error = None
+    for attempt in range(retries + 1):
+        try:
+            print(f"\n>>> 处理任务 {item.get('name')}，第 {attempt + 1}/{retries + 1} 次")
+            return {
+                **process_item_once(item),
+                "attempt": attempt + 1,
+                "max_attempts": retries + 1,
+            }
+        except Exception as e:
+            last_error = e
+            print(f"[ERROR] 任务失败，第 {attempt + 1}/{retries + 1} 次: {e}")
+            traceback.print_exc()
+    return {
+        **item,
+        "status": "error",
+        "error": str(last_error) if last_error else "unknown error",
+        "attempt": retries + 1,
+        "max_attempts": retries + 1,
+    }
+
+
+def _normalize_ws_payload(payload) -> list[dict]:
+    """
+    支持以下输入：
+    1) {"name": "...", "link": "..."}
+    2) [{"name": "...", "link": "..."}, ...]
+    3) {"videos":[...]} 或 {"data": {.../[]}}
+    """
+    if isinstance(payload, list):
+        return [x for x in payload if isinstance(x, dict)]
+    if isinstance(payload, dict):
+        if "name" in payload and "link" in payload:
+            return [payload]
+        for key in ("videos", "data", "items"):
+            v = payload.get(key)
+            if isinstance(v, list):
+                return [x for x in v if isinstance(x, dict)]
+            if isinstance(v, dict):
+                return [v]
+    return []
+
+
+def run_file_mode():
     ensure_dirs()
     config = load_config()
 
@@ -416,15 +500,99 @@ def main():
             continue
 
         try:
-            transcript_path = stream_transcribe(name, link)
-            try:
-                refined_path = refine_transcript_with_qwen(name, transcript_path)
-                print(f"✅ AI 断句整理完成：{refined_path}")
-            except Exception as e:
-                print(f"⚠ AI 处理失败（跳过）：{e}")
+            result = process_item_with_retry(item, retries=3)
+            if result.get("status") == "success":
+                print(f"✅ 处理完成：{name}")
+            else:
+                print(f"[ERROR] 处理 {name} 失败：{result.get('error')}")
         except Exception as e:
             print(f"[ERROR] 处理 {name} 失败：{e}")
 
 
+async def run_realtime_mode(host: str, port: int):
+    """
+    实时模式：
+    - 启动 WebSocket 服务
+    - 接收类似 videos.json 结构的消息
+    - 入队串行处理（默认不并发）
+    - 处理完成后回传：原结构 + 文字稿/状态
+    """
+    ensure_dirs()
+    task_queue: asyncio.Queue[tuple[object, dict]] = asyncio.Queue()
+
+    async def worker():
+        while True:
+            websocket, item = await task_queue.get()
+            try:
+                result = await asyncio.to_thread(process_item_with_retry, item, 3)
+                await websocket.send(json.dumps(result, ensure_ascii=False))
+            except Exception as e:
+                err = {
+                    **item,
+                    "status": "error",
+                    "error": str(e),
+                }
+                try:
+                    await websocket.send(json.dumps(err, ensure_ascii=False))
+                except Exception:
+                    pass
+            finally:
+                task_queue.task_done()
+
+    async def ws_handler(websocket):
+        async for message in websocket:
+            try:
+                payload = json.loads(message)
+            except Exception:
+                await websocket.send(
+                    json.dumps({"status": "error", "error": "消息不是合法 JSON"}, ensure_ascii=False)
+                )
+                continue
+
+            items = _normalize_ws_payload(payload)
+            if not items:
+                await websocket.send(
+                    json.dumps(
+                        {
+                            "status": "error",
+                            "error": "消息结构不符合要求，需包含 name/link 或 videos/data 列表",
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                continue
+
+            for item in items:
+                await task_queue.put((websocket, item))
+            await websocket.send(
+                json.dumps(
+                    {
+                        "status": "queued",
+                        "queued_count": len(items),
+                        "queue_size": task_queue.qsize(),
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+    worker_task = asyncio.create_task(worker())
+    print(f"🚀 WebSocket 实时服务已启动：ws://{host}:{port}")
+    print("   收到消息后将按队列串行处理，完成后回传结果。")
+    try:
+        async with websockets.serve(ws_handler, host, port, max_size=8 * 1024 * 1024):
+            await asyncio.Future()
+    finally:
+        worker_task.cancel()
+
+
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Whisper 无下载批量/实时转写")
+    parser.add_argument("--mode", choices=["file", "realtime"], default="file", help="运行模式")
+    parser.add_argument("--host", default=REALTIME_HOST, help="realtime 模式监听地址")
+    parser.add_argument("--port", type=int, default=REALTIME_PORT, help="realtime 模式监听端口")
+    args = parser.parse_args()
+
+    if args.mode == "file":
+        run_file_mode()
+    else:
+        asyncio.run(run_realtime_mode(args.host, args.port))

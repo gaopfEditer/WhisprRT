@@ -449,6 +449,80 @@ whisperx audio.wav --model large-v2 --language zh --output_dir subtitles --outpu
 
 
 
+# Usage
+
+## 1) `app/main.py`（Web 实时转写服务）
+
+先激活虚拟环境并安装依赖，再启动：
+
+```powershell
+.venv\Scripts\Activate.ps1
+python -m app.main
+```
+
+或：
+
+```powershell
+uv run python -m app.main
+```
+
+启动后访问：
+
+```text
+http://127.0.0.1:5444
+```
+
+---
+
+## 2) `batch_whisperx_nodownload.py`（不下载文件，直接流式转写）
+
+### 文件模式（读取 `videos.json`）
+
+```powershell
+python batch_whisperx_nodownload.py --mode file
+```
+
+### 实时模式（WebSocket 队列串行处理）
+
+默认监听已固定为 `127.0.0.1:3333`：
+
+```powershell
+python batch_whisperx_nodownload.py --mode realtime
+```
+
+也可覆盖地址和端口：
+
+```powershell
+python batch_whisperx_nodownload.py --mode realtime --host 127.0.0.1 --port 3333
+```
+
+说明：
+- 接收单个任务或任务列表（结构类似 `videos.json` 的 `{name, link}`）。
+- 默认串行处理（队列），每个任务失败会自动重试 3 次。
+- 完成后通过 WebSocket 回传原任务字段 + 文字稿内容。
+
+---
+
+## 3) `download_m3u8.py`（下载并解密 m3u8）
+
+先在脚本底部修改 `DOWNLOAD_LIST`，填入 `(m3u8_url, output_file)` 列表，再运行：
+
+```powershell
+python download_m3u8.py
+```
+
+依赖：
+
+```powershell
+pip install pycryptodome
+```
+
+说明：
+- 支持 AES-128-CBC m3u8 分片下载与解密。
+- 若系统有 ffmpeg，会使用 ffmpeg 合并分片；否则走简单拼接。
+- 输出文件名由 `DOWNLOAD_LIST` 的第二个参数决定（如 `xxx.ts`）。
+
+
 # batch_whisperx_nodownload
 
 下载文字稿主要用这个：batch_whisperx_nodownload 另一个先下载再转，转2、3个就自己卡死，流程不合理
