@@ -180,3 +180,7 @@ cython_debug/
 
 .cursor/
 transcript_output.txt
+
+# yt-dlp 浏览器导出的 Cookie（勿提交）
+youtube_cookies.txt
+batch_deal_dy_cookie.txt

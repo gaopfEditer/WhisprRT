@@ -1,7 +1,16 @@
 #!/usr/bin/env python3
 """
 Download and decrypt HLS (m3u8) video with AES-128 encryption
+
+用法：
+  # 命令行指定单个或多个 m3u8（-o 与 --url 数量一致时可省略，自动生成 m3u8_out_001.ts …）
+  python download_m3u8.py --url "https://example.com/playlist.m3u8" -o out.ts
+  python download_m3u8.py -u URL1 -u URL2
+
+  # 不传参数时仍使用脚本底部 DOWNLOAD_LIST 批量下载
+  python download_m3u8.py
 """
+import argparse
 import os
 import re
 import ssl
@@ -170,26 +179,80 @@ def download_m3u8_video(m3u8_url, output_file):
         os.remove(file_list_path)
     temp_dir.rmdir()
 
-if __name__ == "__main__":
-    # 多个 (m3u8_url, output_file) 依次下载
-    DOWNLOAD_LIST = [
-        (
-            "https://hls.buejwd.cn/videos5/b7579ca814104a4e0b534054e4e064d5/b7579ca814104a4e0b534054e4e064d5.m3u8?auth_key=1773752728-69b951988aca5-0-d74e9bd3caa9aedd47f221eea7361b99&v=3&time=0",
-            "2222.ts",
-        ),
-    ]
+
+# 不传命令行参数时使用：多个 (m3u8_url, output_file) 依次下载
+DOWNLOAD_LIST = [
+    (
+        "https://hls.buejwd.cn/videos5/b7579ca814104a4e0b534054e4e064d5/b7579ca814104a4e0b534054e4e064d5.m3u8?auth_key=1773752728-69b951988aca5-0-d74e9bd3caa9aedd47f221eea7361b99&v=3&time=0",
+        "2222.ts",
+    ),
+]
+
+
+def _build_download_jobs_from_args(urls: list[str], outputs: list[str] | None) -> list[tuple[str, str]]:
+    """根据 CLI 生成 (m3u8_url, output_file) 列表。"""
+    if not urls:
+        return []
+    outs = outputs or []
+    n = len(urls)
+    if len(outs) == 0:
+        return [(urls[i], f"m3u8_out_{i + 1:03d}.ts") for i in range(n)]
+    if len(outs) == 1 and n == 1:
+        return [(urls[0], outs[0])]
+    if len(outs) != n:
+        raise ValueError(
+            f"--url 数量 ({n}) 与 -o/--output 数量 ({len(outs)}) 不一致；"
+            "请省略 -o 使用默认文件名，或为每个 --url 各写一个 -o"
+        )
+    return list(zip(urls, outs, strict=True))
+
+
+def main():
+    parser = argparse.ArgumentParser(description="下载并解密 m3u8（HLS）")
+    parser.add_argument(
+        "-u",
+        "--url",
+        action="append",
+        dest="urls",
+        metavar="M3U8_URL",
+        help="m3u8 地址，可多次指定",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        action="append",
+        dest="outputs",
+        metavar="FILE",
+        help="输出文件；单个 URL 时可一个 -o；多个 URL 时需与 --url 数量一致，或全部省略使用默认名",
+    )
+    args = parser.parse_args()
+
+    if args.urls:
+        try:
+            jobs = _build_download_jobs_from_args(args.urls, args.outputs)
+        except ValueError as e:
+            print(f"参数错误: {e}")
+            raise SystemExit(2) from e
+    else:
+        jobs = list(DOWNLOAD_LIST)
 
     try:
-        from Crypto.Cipher import AES
-        for i, (m3u8_url, output_file) in enumerate(DOWNLOAD_LIST, 1):
-            if Path(output_file).exists():
-                print(f"[{i}/{len(DOWNLOAD_LIST)}] 已存在，跳过: {output_file}")
-                continue
-            print(f"[{i}/{len(DOWNLOAD_LIST)}] 下载: {output_file}")
-            download_m3u8_video(m3u8_url, output_file)
-        print("全部下载完成。")
+        from Crypto.Cipher import AES  # noqa: F401
     except ImportError:
         print("pycryptodome not installed. Installing...")
         import subprocess
-        subprocess.run(["pip3", "install", "--user", "pycryptodome"])
+        subprocess.run(["pip3", "install", "--user", "pycryptodome"], check=False)
         print("Please run the script again after installation.")
+        raise SystemExit(1)
+
+    for i, (m3u8_url, output_file) in enumerate(jobs, 1):
+        if Path(output_file).exists():
+            print(f"[{i}/{len(jobs)}] 已存在，跳过: {output_file}")
+            continue
+        print(f"[{i}/{len(jobs)}] 下载: {output_file}")
+        download_m3u8_video(m3u8_url, output_file)
+    print("全部下载完成。")
+
+
+if __name__ == "__main__":
+    main()

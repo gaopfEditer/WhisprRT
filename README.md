@@ -482,6 +482,15 @@ http://127.0.0.1:5444
 python batch_whisperx_nodownload.py --mode file
 ```
 
+### 文件模式（命令行直接传链接，不读 `videos.json`）
+
+单个或多个 `--url`，可选 `--name` 与 `--url` 一一对应；未写 `name` 时自动为 `cli_001`、`cli_002` …
+
+```powershell
+python batch_whisperx_nodownload.py --mode file --url "https://www.youtube.com/watch?v=xxxx"
+python batch_whisperx_nodownload.py --mode file --url URL1 --url URL2 --name my_a --name my_b
+```
+
 ### 实时模式（WebSocket 队列串行处理）
 
 默认监听已固定为 `127.0.0.1:3333`：
@@ -505,7 +514,16 @@ python batch_whisperx_nodownload.py --mode realtime --host 127.0.0.1 --port 3333
 
 ## 3) `download_m3u8.py`（下载并解密 m3u8）
 
-先在脚本底部修改 `DOWNLOAD_LIST`，填入 `(m3u8_url, output_file)` 列表，再运行：
+**命令行传 m3u8 地址（推荐）：**
+
+```powershell
+python download_m3u8.py -u "https://example.com/playlist.m3u8" -o out.ts
+python download_m3u8.py --url URL1 --url URL2
+```
+
+多个 `--url` 且省略 `-o` 时，输出默认名为 `m3u8_out_001.ts`、`m3u8_out_002.ts` …；多个 `--url` 时也可为每个 `--url` 各写一个 `-o`，数量须一致。
+
+**仍支持脚本内批量：** 在脚本底部修改 `DOWNLOAD_LIST`，不传任何参数则运行：
 
 ```powershell
 python download_m3u8.py
