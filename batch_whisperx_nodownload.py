@@ -79,15 +79,41 @@ QWEN_MODEL = "qwen-turbo"
 _whisper_model: WhisperModel | None = None
 
 
+def _is_cuda_runtime_missing_error(e: BaseException) -> bool:
+    msg = str(e).lower()
+    keys = (
+        "cublas64_12.dll",
+        "cudnn",
+        "cublas",
+        "cuda runtime",
+        "cannot be loaded",
+        "is not found",
+    )
+    return any(k in msg for k in keys)
+
+
 def get_whisper_model() -> WhisperModel:
-    global _whisper_model
+    global _whisper_model, WHISPER_DEVICE, WHISPER_COMPUTE_TYPE
     if _whisper_model is None:
         print(f"\n>>> 加载 Whisper 模型: {WHISPER_MODEL} ({WHISPER_DEVICE}, {WHISPER_COMPUTE_TYPE})")
-        _whisper_model = WhisperModel(
-            WHISPER_MODEL,
-            device=WHISPER_DEVICE,
-            compute_type=WHISPER_COMPUTE_TYPE,
-        )
+        try:
+            _whisper_model = WhisperModel(
+                WHISPER_MODEL,
+                device=WHISPER_DEVICE,
+                compute_type=WHISPER_COMPUTE_TYPE,
+            )
+        except Exception as e:
+            if WHISPER_DEVICE == "cuda" and _is_cuda_runtime_missing_error(e):
+                print("⚠ CUDA 运行库缺失，自动回退到 CPU 模式继续本次任务。")
+                WHISPER_DEVICE = "cpu"
+                WHISPER_COMPUTE_TYPE = "int8"
+                _whisper_model = WhisperModel(
+                    WHISPER_MODEL,
+                    device=WHISPER_DEVICE,
+                    compute_type=WHISPER_COMPUTE_TYPE,
+                )
+            else:
+                raise
     return _whisper_model
 
 
@@ -447,6 +473,9 @@ def process_item_with_retry(item: dict, retries: int = 3) -> dict:
             last_error = e
             print(f"[ERROR] 任务失败，第 {attempt + 1}/{retries + 1} 次: {e}")
             traceback.print_exc()
+            if _is_cuda_runtime_missing_error(e):
+                print("[ERROR] 检测到 CUDA 运行库缺失，属于环境问题，不再重复重试当前任务。")
+                break
     return {
         **item,
         "status": "error",

@@ -579,3 +579,12 @@ https://github.com/yt-dlp/yt-dlp/wiki/Supported-sites
 只要有音轨：视频会被 FFmpeg 抽成 16kHz 单声道再送给 Whisper，所以“能播的网页/链接”一般都能转写。
 限制：极冷门或带强 DRM 的流，FFmpeg 可能解不了，这类无法支持。
 
+
+
+类似的问题
+RuntimeError: Library cublas64_12.dll is not found or cannot be loaded
+[ERROR] 检测到 CUDA 运行库缺失，属于环境问题，不再重复重试当前任务。
+[ERROR] 处理 未来5年1 失败：Library cublas64_12.dll is not found or cannot be loaded 
+
+gpu相关库缺失，要么下载补充，要么使用cpu
+$env:USE_CPU="1"; python batch_whisperx_nodownload.py
