@@ -19,11 +19,11 @@ python -m app.main
 python batch_whisperx_nodownload.py --mode file
 ```
 
-**命令行指定链接（不读 `videos.json`）：**
+**命令行 URL 模式（只要出现 `--url` 即不读 `videos.json`，默认 `--mode file` 可不写）：**
 
 ```powershell
-python batch_whisperx_nodownload.py --mode file --url "https://..."
-python batch_whisperx_nodownload.py --mode file --url URL1 --url URL2 --name a --name b
+python batch_whisperx_nodownload.py --url "https://..."
+python batch_whisperx_nodownload.py --url URL1 --url URL2 --name a --name b
 ```
 
 **实时 WebSocket 队列（默认 `127.0.0.1:3333`）：**

@@ -2,7 +2,7 @@
 批量流式转写脚本 - 无需下载，直接获取 URL 音视频流并转写中文字稿
 
 技术方案：yt-dlp 获取真实流地址 → FFmpeg 管道转 16k 单声道 PCM → faster-whisper 推理
-配置文件：未传 --url 时读取 videos.json（与 batch_whisperx 共用）；传了 --url 则仅从命令行取任务，不读 videos.json
+配置文件：videos.json（与 batch_whisperx 共用）
 
 依赖：yt-dlp, ffmpeg, faster-whisper, numpy, requests
   pip install yt-dlp faster-whisper numpy requests
@@ -16,7 +16,6 @@ import asyncio
 import json
 import os
 import re
-import urllib.parse
 import shutil
 import subprocess
 import traceback
@@ -39,30 +38,6 @@ def get_ffmpeg_path() -> str:
     )
 
 
-def _ffmpeg_proxy_cli_args() -> list[str]:
-    """
-    FFmpeg 拉取 https 输入时不会自动使用 HTTPS_PROXY（与 curl 不同），需显式传入 -http_proxy / -socks_proxy。
-    读取顺序：FFMPEG_HTTP_PROXY → HTTPS_PROXY / https_proxy / HTTP_PROXY / http_proxy → ALL_PROXY / all_proxy。
-    """
-    url = os.environ.get("FFMPEG_HTTP_PROXY", "").strip()
-    if not url:
-        for k in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
-            url = os.environ.get(k, "").strip()
-            if url:
-                break
-    if not url:
-        for k in ("ALL_PROXY", "all_proxy"):
-            url = os.environ.get(k, "").strip()
-            if url:
-                break
-    if not url:
-        return []
-    low = url.lower()
-    if low.startswith("socks5://") or low.startswith("socks://"):
-        return ["-socks_proxy", url]
-    return ["-http_proxy", url]
-
-
 import requests
 import yt_dlp
 from faster_whisper import WhisperModel
@@ -76,9 +51,6 @@ LOG_DIR = Path("logs")
 OUTPUT_DIR = Path("output")
 REALTIME_HOST = "127.0.0.1"
 REALTIME_PORT = 3333
-
-# FFmpeg 代理提示只打一次（stream_to_audio_array）
-_ffmpeg_proxy_logged = False
 
 # faster-whisper 参数
 WHISPER_MODEL = "large-v3-turbo"
@@ -150,37 +122,6 @@ def load_config():
         raise FileNotFoundError(f"配置文件不存在: {CONFIG_PATH}")
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         return json.load(f)
-
-
-def _default_name_from_url(url: str, index: int) -> str:
-    """从 URL 生成可用作 output 文件名的片段（无 --name 时使用）。"""
-    try:
-        p = urllib.parse.urlparse(url)
-        seg = (p.path or "").rstrip("/").split("/")[-1] or "video"
-        seg = seg.split("?")[0]
-        seg = re.sub(r"[^\w\u4e00-\u9fff\-]", "_", seg).strip("_")
-        if not seg:
-            seg = f"url_{index}"
-        return seg[:120]
-    except Exception:
-        return f"url_{index}"
-
-
-def build_items_from_cli_urls(urls: list[str], names: list[str]) -> list[dict]:
-    """
-    由命令行 --url / --name 构建任务列表；name 与 url 按下标对齐，缺省 name 时从 URL 推断。
-    """
-    items: list[dict] = []
-    for i, link in enumerate(urls):
-        link = (link or "").strip()
-        if not link:
-            continue
-        if i < len(names) and (names[i] or "").strip():
-            name = (names[i] or "").strip()
-        else:
-            name = _default_name_from_url(link, i + 1)
-        items.append({"name": name, "link": link})
-    return items
 
 
 def ensure_dirs():
@@ -265,20 +206,10 @@ def stream_to_audio_array(stream_url: str, duration_sec: float | None = None) ->
     使用 FFmpeg 将流转为 16kHz 单声道 float32 数组（Whisper 所需格式）。
     若提供 duration_sec，会按读取字节数估算并打印转码进度。
     """
-    global _ffmpeg_proxy_logged
     cmd = [
         get_ffmpeg_path(),
         "-hide_banner", "-loglevel", "error",
     ]
-    proxy_cli = _ffmpeg_proxy_cli_args()
-    if proxy_cli:
-        cmd.extend(proxy_cli)
-        if not _ffmpeg_proxy_logged:
-            _ffmpeg_proxy_logged = True
-            print(
-                ">>> FFmpeg 已附加代理（-http_proxy/-socks_proxy）；"
-                "FFmpeg 默认不读 HTTPS_PROXY，与 curl 不同，已由脚本同步环境变量。"
-            )
     if "bilibili" in stream_url or "bilivideo" in stream_url:
         cmd.extend([
             "-headers",
@@ -575,17 +506,9 @@ def _normalize_ws_payload(payload) -> list[dict]:
     return []
 
 
-def run_file_mode(cli_urls: list[str] | None = None, cli_names: list[str] | None = None):
+def run_file_mode():
     ensure_dirs()
-    urls = [u for u in (cli_urls or []) if (u or "").strip()]
-    if urls:
-        names = cli_names or []
-        config = build_items_from_cli_urls(urls, names)
-        print(">>> URL 模式：使用命令行中的链接，不读取 videos.json")
-    else:
-        config = load_config()
-        if not isinstance(config, list):
-            raise ValueError("videos.json 顶层应为对象数组 [{name, link}, ...]")
+    config = load_config()
 
     for item in config:
         name = item.get("name")
@@ -694,27 +617,11 @@ async def run_realtime_mode(host: str, port: int):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Whisper 无下载批量/实时转写")
     parser.add_argument("--mode", choices=["file", "realtime"], default="file", help="运行模式")
-    parser.add_argument(
-        "--url",
-        action="append",
-        default=None,
-        metavar="URL",
-        help="指定视频链接（可多次）；一旦提供则不读取 videos.json，仅处理这些 URL",
-    )
-    parser.add_argument(
-        "--name",
-        action="append",
-        default=None,
-        metavar="NAME",
-        help="与 --url 顺序对应的输出文件名（不含扩展名）；可少于 URL 数量，缺省从 URL 推断",
-    )
     parser.add_argument("--host", default=REALTIME_HOST, help="realtime 模式监听地址")
     parser.add_argument("--port", type=int, default=REALTIME_PORT, help="realtime 模式监听端口")
     args = parser.parse_args()
 
     if args.mode == "file":
-        run_file_mode(cli_urls=args.url or [], cli_names=args.name or [])
+        run_file_mode()
     else:
-        if (args.url or args.name):
-            parser.error("realtime 模式不支持 --url / --name，请使用 file 模式或 WebSocket 下发任务")
         asyncio.run(run_realtime_mode(args.host, args.port))

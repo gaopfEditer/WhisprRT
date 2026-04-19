@@ -183,7 +183,7 @@ def download_m3u8_video(m3u8_url, output_file):
 # 不传命令行参数时使用：多个 (m3u8_url, output_file) 依次下载
 DOWNLOAD_LIST = [
     (
-        "https://hls.buejwd.cn/videos5/b7579ca814104a4e0b534054e4e064d5/b7579ca814104a4e0b534054e4e064d5.m3u8?auth_key=1773752728-69b951988aca5-0-d74e9bd3caa9aedd47f221eea7361b99&v=3&time=0",
+        "https://cdn.freefile.io/thumbnails/2025/06/29/83de8e0f-4941-451a-ba49-dd6b684b3db1.mp4",
         "2222.ts",
     ),
 ]
