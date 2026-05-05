@@ -16,6 +16,7 @@ import asyncio
 import json
 import os
 import re
+import sys
 import urllib.parse
 import shutil
 import subprocess
@@ -69,6 +70,18 @@ from faster_whisper import WhisperModel
 
 # 配置文件路径（与 batch_whisperx 共用）
 CONFIG_PATH = Path("videos.json")
+# 本脚本所在目录（Cookie 等文件放这里时，不依赖运行时的 cwd）
+_SCRIPT_DIR = Path(__file__).resolve().parent
+
+# YouTube Cookie（Netscape 格式）：优先 YOUTUBE_COOKIES_FILE，其次项目根 youtube_cookies.txt，再其次本路径（与 batch_or_single_download 一致）
+YOUTUBE_COOKIES_FILE_DEFAULT = Path(r"D:\frontend\main\tools\youtube_cookies.txt")
+# 主配置失败时回退；默认同脚本目录下 macstudioyoutube.com_cookies.txt（可用 YOUTUBE_MACSTUDIO_COOKIES_FILE 覆盖为绝对路径）
+_macstudio_env = os.environ.get("YOUTUBE_MACSTUDIO_COOKIES_FILE", "").strip()
+YOUTUBE_MACSTUDIO_COOKIES_FILE = (
+    Path(_macstudio_env).expanduser()
+    if _macstudio_env
+    else (_SCRIPT_DIR / "macstudioyoutube.com_cookies.txt")
+)
 
 # 输出目录
 TRANSCRIPT_DIR = Path("subtitles")
@@ -79,6 +92,8 @@ REALTIME_PORT = 3333
 
 # FFmpeg 代理提示只打一次（stream_to_audio_array）
 _ffmpeg_proxy_logged = False
+# YouTube Cookie 文件缺字段警告只打一次
+_youtube_cookie_thin_warned = False
 
 # faster-whisper 参数
 WHISPER_MODEL = "large-v3-turbo"
@@ -189,6 +204,280 @@ def ensure_dirs():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _is_youtube_link(link: str) -> bool:
+    low = link.lower()
+    return "youtube.com" in low or "youtu.be" in low or "m.youtube.com" in low
+
+
+def _youtube_cookie_hint() -> str:
+    return (
+        "YouTube 机器人验证仍失败时，请逐项排查：\n"
+        "  · 另一台 Mac 正常、这台不行：多半是出口 IP/网络环境不同（公司网、VPN、机房）导致风控；或本机 yt-dlp 版本较旧。两台都执行 pip install -U yt-dlp 后再比。\n"
+        "  · 仅 Cookie 文件失败时：在本机 Chrome 已登录 YouTube 的前提下，完全退出 Chrome 后执行：\n"
+        "      export YOUTUBE_ON_BOT_TRY_BROWSER=chrome\n"
+        "    脚本会在文件 Cookie 仍报 bot 时改从浏览器读 Cookie（与另一台「浏览器里能用」的现象一致）。\n"
+        "  · 也可全程用浏览器：export YOUTUBE_COOKIES_FROM_BROWSER=chrome（不要用同时存在的旧 cookies 文件覆盖）。\n"
+        "  · 扩展导出的文件易过期；Arc/Brave 请用 brave 或 chromium，勿写 chrome。\n"
+        "详见：https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp\n"
+        "导出说明：https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies\n"
+    )
+
+
+def _youtube_auth_label(opts: dict) -> str:
+    """便于排查的 Cookie 来源描述（不打印 Cookie 内容）。"""
+    if opts.get("cookiefile"):
+        return f"文件 {opts['cookiefile']}"
+    if opts.get("cookiesfrombrowser"):
+        cfb = opts["cookiesfrombrowser"]
+        if isinstance(cfb, (list, tuple)):
+            return "浏览器 " + ":".join(str(x) for x in cfb if x is not None)
+        return f"浏览器 {cfb!r}"
+    return "未配置（YouTube 多半会报 Sign in / bot）"
+
+
+def _is_youtube_bot_or_auth_error(err: BaseException) -> bool:
+    s = str(err).lower()
+    return (
+        "sign in" in s
+        or "not a bot" in s
+        or ("bot" in s and "youtube" in s)
+        or "cookies" in s
+        or "login required" in s
+    )
+
+
+def _is_youtube_networkish_error(err: BaseException) -> bool:
+    """连接/超时/SSL 等，主 Cookie 失败时可换用备用 Cookie 再试。"""
+    s = str(err).lower()
+    return any(
+        x in s
+        for x in (
+            "timed out",
+            "timeout",
+            "connection refused",
+            "connection reset",
+            "network is unreachable",
+            "no route to host",
+            "temporary failure",
+            "name or service not known",
+            "ssl",
+            "eof occurred",
+            "unable to download webpage",
+            "errno",
+            "10054",
+            "10060",
+        )
+    )
+
+
+def _youtube_should_try_macstudio_fallback(err: BaseException) -> bool:
+    return _is_youtube_bot_or_auth_error(err) or _is_youtube_networkish_error(err)
+
+
+def _youtube_already_uses_cookie_path(opts: dict, path: Path) -> bool:
+    cf = opts.get("cookiefile")
+    if not cf or not path.is_file():
+        return False
+    try:
+        return Path(cf).resolve() == path.resolve()
+    except OSError:
+        return os.path.abspath(str(cf)) == os.path.abspath(str(path))
+
+
+def _youtube_try_extraction_with_clients(
+    link: str, ydl_opts: dict
+) -> tuple[tuple[str, float | None] | None, BaseException | None]:
+    """依次尝试各 player_client；成功返回 (结果, None)，失败返回 (None, last_error)。"""
+    last_err: BaseException | None = None
+    for clients in _youtube_player_client_variants(ydl_opts):
+        opts_try = _youtube_opts_with_player_client(ydl_opts, clients)
+        try:
+            return (_extract_stream_url_with_ydl(link, opts_try), None)
+        except Exception as e:
+            last_err = e
+            if _is_youtube_bot_or_auth_error(e):
+                continue
+            if _is_youtube_networkish_error(e):
+                continue
+            return (None, e)
+    return (None, last_err)
+
+
+def _youtube_opts_with_macstudio_cookie(base_plain: dict, mac_path: Path) -> dict:
+    """忽略浏览器 Cookie，强制使用 macstudio 导出文件。"""
+    opts = _merge_youtube_ydl_opts({**base_plain})
+    opts["cookiefile"] = str(mac_path.resolve())
+    opts.pop("cookiesfrombrowser", None)
+    return opts
+
+
+def _youtube_opts_browser_only(base_plain: dict, browser_spec: str) -> dict:
+    """不使用 cookie 文件，仅从本机浏览器读 Cookie（与 yt-dlp --cookies-from-browser 一致）。"""
+    opts = {**base_plain}
+    opts.pop("cookiefile", None)
+    spec = browser_spec.strip()
+    parts = spec.split(":", 1)
+    name = parts[0].strip()
+    if len(parts) > 1 and parts[1].strip():
+        opts["cookiesfrombrowser"] = (name, parts[1].strip())
+    else:
+        opts["cookiesfrombrowser"] = (name,)
+    pc_env = os.environ.get("YOUTUBE_PLAYER_CLIENT", "").strip()
+    yt: dict = {}
+    if pc_env:
+        yt["player_client"] = [p.strip() for p in pc_env.split(",") if p.strip()]
+    else:
+        yt["player_client"] = ["android", "web", "ios"]
+    opts["extractor_args"] = {"youtube": yt}
+    return opts
+
+
+def _warn_if_youtube_cookiefile_thin(cookie_path: str) -> None:
+    """
+    yt-dlp 自己导出的 cookies 往往不含 LOGIN_INFO 等字段，YouTube 仍会报 Sign in / bot。
+    只提示一次，避免刷屏。
+    """
+    global _youtube_cookie_thin_warned
+    if _youtube_cookie_thin_warned or not cookie_path or not os.path.isfile(cookie_path):
+        return
+    try:
+        text = Path(cookie_path).read_text(encoding="utf-8", errors="ignore")[:65536]
+    except OSError:
+        return
+    if "LOGIN_INFO" in text:
+        return
+    _youtube_cookie_thin_warned = True
+    print(
+        ">>> 警告: 当前 Cookie 文件里未见 LOGIN_INFO（常见于仅用 yt-dlp 导出的精简 cookies），"
+        "YouTube 仍可能要求登录验证。\n"
+        "    请在已登录 YouTube 的浏览器里用扩展导出完整 Netscape cookies 覆盖该文件，"
+        "或改用: export YOUTUBE_COOKIES_FROM_BROWSER=chrome（并完全退出 Chrome 后运行）。\n"
+        f"    文件: {cookie_path}",
+        flush=True,
+    )
+
+
+def _merge_youtube_ydl_opts(base: dict) -> dict:
+    """为 YouTube 合并 cookiefile、cookiesfrombrowser，并设置 player_client 以拿到更多格式。"""
+    opts = {**base}
+    cookie_file = os.environ.get("YOUTUBE_COOKIES_FILE", "").strip()
+    if not cookie_file:
+        for candidate in (_SCRIPT_DIR / "youtube_cookies.txt", CONFIG_PATH.parent / "youtube_cookies.txt"):
+            if candidate.is_file():
+                cookie_file = str(candidate.resolve())
+                break
+    if not cookie_file and YOUTUBE_COOKIES_FILE_DEFAULT.is_file():
+        cookie_file = str(YOUTUBE_COOKIES_FILE_DEFAULT)
+    if cookie_file and os.path.isfile(cookie_file):
+        opts["cookiefile"] = cookie_file
+    else:
+        browser = os.environ.get("YOUTUBE_COOKIES_FROM_BROWSER", "").strip()
+        if browser:
+            parts = browser.split(":", 1)
+            name = parts[0].strip()
+            if len(parts) > 1 and parts[1].strip():
+                opts["cookiesfrombrowser"] = (name, parts[1].strip())
+            else:
+                opts["cookiesfrombrowser"] = (name,)
+
+    ex = dict(opts.get("extractor_args") or {})
+    yt = dict(ex.get("youtube") or {})
+    # 允许用环境变量覆盖，例如：YOUTUBE_PLAYER_CLIENT=web,android,ios
+    pc_env = os.environ.get("YOUTUBE_PLAYER_CLIENT", "").strip()
+    if pc_env:
+        yt["player_client"] = [p.strip() for p in pc_env.split(",") if p.strip()]
+    elif not yt.get("player_client"):
+        # 使用 cookie 文件时，上游更倾向 tv / web_safari / web 顺序；纯无 cookie 仍用 android 先试
+        if opts.get("cookiefile"):
+            yt["player_client"] = [
+                "tv",
+                "tv_embedded",
+                "web_safari",
+                "web",
+                "mweb",
+                "android",
+                "ios",
+            ]
+        else:
+            yt["player_client"] = ["android", "web", "ios"]
+    ex["youtube"] = yt
+    opts["extractor_args"] = ex
+    return opts
+
+
+def _youtube_opts_with_player_client(base: dict, clients: list[str]) -> dict:
+    o = {**base}
+    ex = dict(o.get("extractor_args") or {})
+    yt = dict(ex.get("youtube") or {})
+    yt["player_client"] = clients
+    ex["youtube"] = yt
+    o["extractor_args"] = ex
+    return o
+
+
+def _youtube_player_client_variants(base_opts: dict) -> list[list[str]]:
+    """在 bot 类错误时依次尝试的 player_client 组合（去重）。"""
+    ex = base_opts.get("extractor_args") or {}
+    yt = ex.get("youtube") or {}
+    first = yt.get("player_client")
+    if isinstance(first, str):
+        current: list[str] = [first]
+    elif isinstance(first, (list, tuple)):
+        current = [str(x) for x in first]
+    else:
+        current = ["android", "web", "ios"]
+
+    using_cookiefile = bool(base_opts.get("cookiefile"))
+    # 有 cookie 文件时多试几组 TV/Web 组合（与无 cookie 时的顺序不同）
+    tv_first: list[list[str]] = [
+        ["tv", "web_safari", "web", "android"],
+        ["tv", "tv_embedded", "web"],
+        ["web_safari", "web", "mweb"],
+        ["tv_embedded", "web"],
+        ["android", "web", "ios"],
+    ]
+    android_first: list[list[str]] = [
+        ["web", "android", "ios"],
+        ["android", "ios", "web"],
+        ["android"],
+        ["web"],
+        ["ios", "web", "android"],
+        ["mweb", "web", "android"],
+    ]
+
+    fallbacks: list[list[str]] = [current] + (tv_first if using_cookiefile else android_first)
+    seen: set[tuple[str, ...]] = set()
+    out: list[list[str]] = []
+    for chain in fallbacks:
+        key = tuple(chain)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(chain)
+    return out
+
+
+def _extract_stream_url_with_ydl(link: str, ydl_opts: dict) -> tuple[str, float | None]:
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(link, download=False)
+    if info is None:
+        raise RuntimeError(f"无法获取视频信息: {link}")
+    url = info.get("url")
+    if not url:
+        formats = info.get("formats") or []
+        for f in formats:
+            u = f.get("url")
+            if u and (f.get("vcodec") == "none" or f.get("acodec") != "none"):
+                url = u
+                break
+        if not url and formats:
+            url = next((f.get("url") for f in formats if f.get("url")), None)
+    if not url:
+        raise RuntimeError(f"无法获取流地址: {link}")
+    duration = info.get("duration")
+    return (url, float(duration) if duration is not None else None)
+
+
 def get_stream_url(link: str) -> tuple[str, float | None]:
     """使用 yt-dlp 获取音视频流的真实 URL 与时长（秒），不下载。返回 (url, duration_sec)，duration 可能为 None。"""
     ydl_opts = {
@@ -240,24 +529,85 @@ def get_stream_url(link: str) -> tuple[str, float | None]:
                     return (url, float(duration) if duration is not None else None)
         except Exception as e:
             raise RuntimeError(f"{douyin_cookie_hint}\n原始错误: {e}") from e
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(link, download=False)
-        if info is None:
-            raise RuntimeError(f"无法获取视频信息: {link}")
-        url = info.get("url")
-        if not url:
-            formats = info.get("formats") or []
-            for f in formats:
-                u = f.get("url")
-                if u and (f.get("vcodec") == "none" or f.get("acodec") != "none"):
-                    url = u
-                    break
-            if not url and formats:
-                url = next((f.get("url") for f in formats if f.get("url")), None)
-        if not url:
-            raise RuntimeError(f"无法获取流地址: {link}")
-        duration = info.get("duration")
-        return (url, float(duration) if duration is not None else None)
+
+    if _is_youtube_link(link):
+        yt_base = {**ydl_opts}
+        ydl_opts = _merge_youtube_ydl_opts(ydl_opts)
+        # 未配置 Cookie 时，直接使用脚本目录下的 macstudio 导出文件（避免 cwd 不对找不到文件）
+        if (
+            not ydl_opts.get("cookiefile")
+            and not ydl_opts.get("cookiesfrombrowser")
+            and YOUTUBE_MACSTUDIO_COOKIES_FILE.is_file()
+        ):
+            ydl_opts = _youtube_opts_with_macstudio_cookie(yt_base, YOUTUBE_MACSTUDIO_COOKIES_FILE)
+        cf = ydl_opts.get("cookiefile")
+        if cf:
+            _warn_if_youtube_cookiefile_thin(str(cf))
+        if os.environ.get("YOUTUBE_DEBUG", "").strip().lower() in ("1", "true", "yes"):
+            print(f">>> YouTube Cookie 来源: {_youtube_auth_label(ydl_opts)}", flush=True)
+
+        ok, last_err = _youtube_try_extraction_with_clients(link, ydl_opts)
+        if ok is not None:
+            return ok
+
+        fb = YOUTUBE_MACSTUDIO_COOKIES_FILE
+        if (
+            last_err is not None
+            and fb.is_file()
+            and _youtube_should_try_macstudio_fallback(last_err)
+            and not _youtube_already_uses_cookie_path(ydl_opts, fb)
+        ):
+            if os.environ.get("YOUTUBE_DEBUG", "").strip().lower() in ("1", "true", "yes"):
+                print(f">>> YouTube 回退尝试 Cookie: {fb}", flush=True)
+            ydl_fb = _youtube_opts_with_macstudio_cookie(yt_base, fb)
+            ok2, last_err2 = _youtube_try_extraction_with_clients(link, ydl_fb)
+            if ok2 is not None:
+                return ok2
+            if last_err2 is not None:
+                last_err = last_err2
+            ydl_opts = ydl_fb
+
+        on_bot_browser = os.environ.get("YOUTUBE_ON_BOT_TRY_BROWSER", "").strip()
+        if (
+            last_err is not None
+            and _is_youtube_bot_or_auth_error(last_err)
+            and on_bot_browser
+            and not ydl_opts.get("cookiesfrombrowser")
+        ):
+            if os.environ.get("YOUTUBE_DEBUG", "").strip().lower() in ("1", "true", "yes"):
+                print(
+                    f">>> YouTube 仍报 bot，按 YOUTUBE_ON_BOT_TRY_BROWSER 从浏览器重试: {on_bot_browser}",
+                    flush=True,
+                )
+            ydl_br = _youtube_opts_browser_only(yt_base, on_bot_browser)
+            ok3, last_err3 = _youtube_try_extraction_with_clients(link, ydl_br)
+            if ok3 is not None:
+                return ok3
+            if last_err3 is not None:
+                last_err = last_err3
+            ydl_opts = ydl_br
+
+        if last_err is not None:
+            if _is_youtube_bot_or_auth_error(last_err):
+                extra = ""
+                ms_path = YOUTUBE_MACSTUDIO_COOKIES_FILE
+                if ms_path.is_file():
+                    resolved = ms_path.resolve()
+                    if _youtube_already_uses_cookie_path(ydl_opts, ms_path):
+                        extra = (
+                            f"\n说明: 已使用备用 Cookie 文件仍失败，多为 Cookie 过期或 IP/账号被风控；"
+                            f"请重新导出并覆盖，或升级 yt-dlp、换网络。\n    {resolved}\n"
+                        )
+                    else:
+                        extra = f"\n说明: 备用 Cookie 文件路径（请核对是否在磁盘上）: {resolved}\n"
+                raise RuntimeError(
+                    f"{_youtube_cookie_hint()}{extra}"
+                    f"当前 Cookie 配置: {_youtube_auth_label(ydl_opts)}\n原始错误: {last_err}"
+                ) from last_err
+            raise last_err
+        raise RuntimeError("yt-dlp YouTube 解析失败且无错误信息")
+
+    return _extract_stream_url_with_ydl(link, ydl_opts)
 
 
 def stream_to_audio_array(stream_url: str, duration_sec: float | None = None) -> np.ndarray:
@@ -691,8 +1041,84 @@ async def run_realtime_mode(host: str, port: int):
         worker_task.cancel()
 
 
+def refresh_youtube_cookies_cli(browser_spec: str) -> int:
+    """
+    调用 yt-dlp：从本机浏览器读取 Cookie 并写入 Netscape 文件（与 --cookies 行为一致）。
+    无法弹出 YouTube 页面；请先在浏览器里登录 youtube.com（含人机验证），再退出浏览器后执行。
+    """
+    global _youtube_cookie_thin_warned
+    browser_spec = (browser_spec or "chrome").strip()
+    out_path = YOUTUBE_MACSTUDIO_COOKIES_FILE.resolve()
+    test_url = os.environ.get(
+        "YOUTUBE_COOKIE_TEST_URL",
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    ).strip()
+    print(
+        "\n>>> 刷新 YouTube Cookie 到文件（一次性，之后批处理可读该文件）\n"
+        "    YouTube 不会在命令行里弹窗；请按顺序：\n"
+        "    1) 打开 Chrome（或你指定的浏览器）访问 https://www.youtube.com 并登录（若出现验证请做完）\n"
+        "    2) 完全退出该浏览器（macOS：菜单 → 退出 Chrome，不要只关窗口）\n"
+        "    3) 再执行下面这条命令（已包含你当前参数）\n\n"
+        f"    写入路径: {out_path}\n"
+        f"    浏览器参数: {browser_spec}\n"
+        f"    测试 URL（可用环境变量 YOUTUBE_COOKIE_TEST_URL 改成你的视频）\n",
+        flush=True,
+    )
+    cmd = [
+        sys.executable,
+        "-m",
+        "yt_dlp",
+        "--cookies-from-browser",
+        browser_spec,
+        "--cookies",
+        str(out_path),
+        "--simulate",
+        test_url,
+    ]
+    print("执行:", " ".join(cmd), "\n", flush=True)
+    p = subprocess.run(cmd)
+    if p.returncode != 0:
+        print(
+            f"\n>>> yt-dlp 退出码 {p.returncode}。"
+            "若提示无法读 Cookie 数据库，请确认浏览器已完全退出；Brave/Arc 请把 --browser 设为 brave。",
+            flush=True,
+        )
+        return p.returncode
+    _youtube_cookie_thin_warned = False
+    try:
+        text = out_path.read_text(encoding="utf-8", errors="ignore")[:65536]
+    except OSError as e:
+        print(f"\n>>> 无法读取输出文件: {e}", flush=True)
+        return 1
+    if "LOGIN_INFO" in text:
+        print(
+            f"\n>>> 成功：文件里已有 LOGIN_INFO，接下来直接跑批处理即可（无需再登录）。\n    {out_path}\n",
+            flush=True,
+        )
+    else:
+        print(
+            "\n>>> 文件已生成，但未检测到 LOGIN_INFO。"
+            "若批处理仍报 bot，请用 Chrome 扩展「Get cookies.txt LOCALLY」在 youtube.com 页导出并覆盖：\n"
+            f"    {out_path}\n",
+            flush=True,
+        )
+    return 0
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Whisper 无下载批量/实时转写")
+    parser.add_argument(
+        "--refresh-youtube-cookies",
+        action="store_true",
+        help="从本机浏览器导出 Cookie 到 macstudioyoutube.com_cookies.txt（覆盖）后退出；"
+        "请先在该浏览器登录 youtube.com 并完全退出浏览器再执行",
+    )
+    parser.add_argument(
+        "--browser",
+        default=None,
+        metavar="SPEC",
+        help="与 --refresh-youtube-cookies 搭配，传给 yt-dlp 的 --cookies-from-browser（如 chrome、chrome:Default、brave）",
+    )
     parser.add_argument("--mode", choices=["file", "realtime"], default="file", help="运行模式")
     parser.add_argument(
         "--url",
@@ -711,6 +1137,10 @@ if __name__ == "__main__":
     parser.add_argument("--host", default=REALTIME_HOST, help="realtime 模式监听地址")
     parser.add_argument("--port", type=int, default=REALTIME_PORT, help="realtime 模式监听端口")
     args = parser.parse_args()
+
+    if args.refresh_youtube_cookies:
+        spec = (args.browser or os.environ.get("YOUTUBE_COOKIES_FROM_BROWSER", "chrome")).strip()
+        raise SystemExit(refresh_youtube_cookies_cli(spec))
 
     if args.mode == "file":
         run_file_mode(cli_urls=args.url or [], cli_names=args.name or [])
