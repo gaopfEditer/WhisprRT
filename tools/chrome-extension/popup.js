@@ -14,9 +14,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   const autoNameCheckbox = document.getElementById('autoNameCheckbox');
   const loadingDiv = document.getElementById('loading');
   const messageDiv = document.getElementById('message');
+  const importCollectionBtn = document.getElementById('importCollectionBtn');
 
   // 加载已选择的视频
   await loadSelectedVideos();
+
+  importCollectionBtn.addEventListener('click', importBilibiliCollectionFromActiveTab);
 
   // 监听storage变化（当content script修改选择时）
   chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -195,7 +198,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             error: errorMsg,
             isNetworkError: errorMsg.includes('fetch') || errorMsg.includes('Failed to fetch') || errorMsg.includes('NetworkError')
           });
-          console.error(`Error adding video ${video.title}:`, error);
         }
       }
 
@@ -317,5 +319,59 @@ document.addEventListener('DOMContentLoaded', async () => {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+  }
+
+  /** 从当前标签页 .video-pod__list 拉取合集并合并到已选列表 */
+  async function importBilibiliCollectionFromActiveTab() {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab || tab.id == null) {
+        showMessage('error', '无法获取当前标签页');
+        return;
+      }
+      if (!tab.url || !tab.url.includes('bilibili.com')) {
+        showMessage('error', '请在哔哩哔哩页面使用此功能');
+        return;
+      }
+      const res = await chrome.tabs.sendMessage(
+        tab.id,
+        { action: 'scrapeBilibiliCollection' },
+        { frameId: 0 }
+      );
+      if (!res || !res.ok) {
+        showMessage('error', res && res.error ? res.error : '解析失败');
+        return;
+      }
+      const videos = res.videos || [];
+      if (videos.length === 0) {
+        showMessage('error', '未找到合集列表（需存在 .video-pod__list 与带 BV 的 data-key）');
+        return;
+      }
+      const result = await chrome.storage.local.get([STORAGE_KEY]);
+      const existing = result[STORAGE_KEY] || [];
+      const byLink = new Map(existing.map((v) => [v.link, v]));
+      let added = 0;
+      for (const v of videos) {
+        if (!v.link || byLink.has(v.link)) continue;
+        byLink.set(v.link, {
+          title: v.title || '未知标题',
+          link: v.link,
+          selectedAt: Date.now()
+        });
+        added++;
+      }
+      await chrome.storage.local.set({ [STORAGE_KEY]: Array.from(byLink.values()) });
+      await loadSelectedVideos();
+      const dup = videos.length - added;
+      const dupHint = dup > 0 ? `，${dup} 个链接已存在已跳过` : '';
+      showMessage('success', `已合并合集 ${videos.length} 条，新增 ${added} 个${dupHint}`);
+    } catch (e) {
+      const msg = e && e.message ? e.message : String(e);
+      if (msg.includes('Could not establish connection') || msg.includes('Receiving end does not exist')) {
+        showMessage('error', '无法连接页面脚本，请刷新哔哩页面后重试');
+      } else {
+        showMessage('error', msg);
+      }
+    }
   }
 });

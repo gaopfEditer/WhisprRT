@@ -1,10 +1,152 @@
 [
- 
   {
-    "name": "英特尔芯片大反攻",
-    "link": "https://www.youtube.com/watch?v=RwP5EvZUvvU",
-    "title": "英特尔芯片大反攻",
-    "shottitle": "未来 1"
+    "name": "-deepseek-854241",
+    "link": "https://www.bilibili.com/video/BV1LYA8eCESA",
+    "title": "保姆级教程！教你搭建一个无限制、可联网、带本地知识库的私人 DeepSeek？",
+    "shottitle": "保姆级教程！教你搭建一个无限制、可联网、"
+  },
+  {
+    "name": "-deepseek-r1--854241",
+    "link": "https://www.bilibili.com/video/BV1WQAUeVEuj",
+    "title": "如何把你的 DeePseek-R1 微调为某个领域的专家？（理论篇）",
+    "shottitle": "如何把你的 DeePseek-R1 微调"
+  },
+  {
+    "name": "-deepseek-r1--854242",
+    "link": "https://www.bilibili.com/video/BV1s2AUe2EBq",
+    "title": "如何把你的 DeePseek-R1 微调为某个领域的专家？（实战篇）",
+    "shottitle": "如何把你的 DeePseek-R1 微调"
+  },
+  {
+    "name": "-deepseek-854242",
+    "link": "https://www.bilibili.com/video/BV1z9RLYWEjq",
+    "title": "想微调特定领域的 DeepSeek，数据集究竟要怎么搞（理论篇）？",
+    "shottitle": "想微调特定领域的 DeepSeek，数据"
+  },
+  {
+    "name": "video-5-854242",
+    "link": "https://www.bilibili.com/video/BV1y8QpYGE57",
+    "title": "如何把领域文献批量转换为可供模型微调的数据集？",
+    "shottitle": "如何把领域文献批量转换为可供模型微调的数"
+  },
+  {
+    "name": "mcp-rag--854242",
+    "link": "https://www.bilibili.com/video/BV12nRzYPEiK",
+    "title": "MCP + 数据库，一种比 RAG 检索效果更好的新方式！",
+    "shottitle": "MCP + 数据库，一种比 RAG 检索"
+  },
+  {
+    "name": "-mcp--854242",
+    "link": "https://www.bilibili.com/video/BV1LQocYjEVt",
+    "title": "全网最细，看完你就能理解 MCP 的核心原理！",
+    "shottitle": "全网最细，看完你就能理解 MCP 的核心"
+  },
+  {
+    "name": "video-8-854242",
+    "link": "https://www.bilibili.com/video/BV1oTEwzcEeZ",
+    "title": "纯本地！零代码！一站式完整数据集准备到模型微调全流程！（一）",
+    "shottitle": "纯本地！零代码！一站式完整数据集准备到模"
+  },
+  {
+    "name": "llama-factory--854242",
+    "link": "https://www.bilibili.com/video/BV1MRMnz1EGW",
+    "title": "LLaMA Factory 微调教程：如何构建高质量数据集？",
+    "shottitle": "LLaMA Factory 微调教程：如"
+  },
+  {
+    "name": "video-10-854242",
+    "link": "https://www.bilibili.com/video/BV1BaM8zHEgh",
+    "title": "微调模型的各种参数到底怎么设置？微调的显存消耗怎么估算？有哪些显存优化技巧？",
+    "shottitle": "微调模型的各种参数到底怎么设置？微调的显"
+  },
+  {
+    "name": "video-11-854242",
+    "link": "https://www.bilibili.com/video/BV1ZAKWzFEyB",
+    "title": "如何观测模型的微调过程？微调后的模型如何合并导出和部署？",
+    "shottitle": "如何观测模型的微调过程？微调后的模型如何"
+  },
+  {
+    "name": "mcp10-854242",
+    "link": "https://www.bilibili.com/video/BV1GUKhzkEHA",
+    "title": "实测上百款MCP后，我发现这10款才是真正能提升生产力的神器！",
+    "shottitle": "实测上百款MCP后，我发现这10款才是真"
+  },
+  {
+    "name": "36b-854242",
+    "link": "https://www.bilibili.com/video/BV1djgRzxEts",
+    "title": "【全36集】B站最细微调教程：教你从零打造专属领域大模型！",
+    "shottitle": "【全36集】B站最细微调教程：教你从零打"
+  },
+  {
+    "name": "-gemini-cli-854242",
+    "link": "https://www.bilibili.com/video/BV1mQghz5EJe",
+    "title": "爆改最近超火的 Gemini CLI，让它支持运行任意大模型！",
+    "shottitle": "爆改最近超火的 Gemini CLI，让"
+  },
+  {
+    "name": "trae-20-solo--854242",
+    "link": "https://www.bilibili.com/video/BV1Am85zkE9V",
+    "title": "半小时上线全栈应用！TRAE 2.0 真能和程序员 SOLO 一把？",
+    "shottitle": "半小时上线全栈应用！TRAE 2.0 真"
+  },
+  {
+    "name": "ai-ai--854242",
+    "link": "https://www.bilibili.com/video/BV1nbJmzqEQJ",
+    "title": "AI 技术是如何演进的？普通人学习 AI 的必修课！",
+    "shottitle": "AI 技术是如何演进的？普通人学习 AI"
+  },
+  {
+    "name": "easy-dataset--854242",
+    "link": "https://www.bilibili.com/video/BV1Rq1hBtEJa",
+    "title": "Easy Dataset 最新更新解读，以及几个数据集构建实战案例！",
+    "shottitle": "Easy Dataset 最新更新解读，"
+  },
+  {
+    "name": "-pk--854242",
+    "link": "https://www.bilibili.com/video/BV1HnB7BjEAN",
+    "title": "世界最顶级的大模型，都在 PK 些啥？（大模型评估完全指南）",
+    "shottitle": "世界最顶级的大模型，都在 PK 些啥？（"
+  },
+  {
+    "name": "-sftrag--854242",
+    "link": "https://www.bilibili.com/video/BV1CRrVB7Eb4",
+    "title": "大模型 SFT/RAG 调优效率翻倍！一键生成测试集 + 自动化评估实践指南！",
+    "shottitle": "大模型 SFT/RAG 调优效率翻倍！一"
+  },
+  {
+    "name": "-agent-skills-854242",
+    "link": "https://www.bilibili.com/video/BV1GXzaByEEo",
+    "title": "一期带你彻底搞懂 Agent Skills，从原理到实战！",
+    "shottitle": "一期带你彻底搞懂 Agent Skill"
+  },
+  {
+    "name": "agent-skills-rag--854242",
+    "link": "https://www.bilibili.com/video/BV1RkFAznESD",
+    "title": "Agent Skills 做知识库检索，能比传统 RAG 效果更好吗？",
+    "shottitle": "Agent Skills 做知识库检索，"
+  },
+  {
+    "name": "-openclaw--854242",
+    "link": "https://www.bilibili.com/video/BV1HxQSBgEvC",
+    "title": "龙虾装上了，可以用来干啥？分享下我的 OpenClaw 多智能体团队搭建经验！",
+    "shottitle": "龙虾装上了，可以用来干啥？分享下我的 O"
+  },
+  {
+    "name": "-ai-harness-engineering-854242",
+    "link": "https://www.bilibili.com/video/BV1Zk9FBwELs",
+    "title": "当下 AI 领域最火热的新概念：Harness Engineering，到底是个啥？",
+    "shottitle": "当下 AI 领域最火热的新概念：Harn"
+  },
+  {
+    "name": "-claude-design-skill-854242",
+    "link": "https://www.bilibili.com/video/BV1MbosBfEoK",
+    "title": "我把 Claude Design 做成了 Skill，人人都能成为顶级网站设计师",
+    "shottitle": "我把 Claude Design 做成了"
+  },
+  {
+    "name": "gpt-image2-skill-854242",
+    "link": "https://www.bilibili.com/video/BV1vi9UBhEKq",
+    "title": "GPT-Image2 完全指南：一期讲透主流玩法（附我的生图 Skill）",
+    "shottitle": "GPT-Image2 完全指南：一期讲透"
   }
-  
 ]
