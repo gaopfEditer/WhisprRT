@@ -41,7 +41,7 @@ async def index(request: Request):
     Returns:
         HTML响应
     """
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(request, "index.html")
 
 def _kill_process_on_port(port: int) -> None:
     """

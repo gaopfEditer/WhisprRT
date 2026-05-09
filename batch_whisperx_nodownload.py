@@ -299,6 +299,8 @@ def _youtube_try_extraction_with_clients(
                 continue
             if _is_youtube_networkish_error(e):
                 continue
+            if _is_retryable_format_error(e):
+                continue
             return (None, e)
     return (None, last_err)
 
@@ -457,25 +459,233 @@ def _youtube_player_client_variants(base_opts: dict) -> list[list[str]]:
     return out
 
 
-def _extract_stream_url_with_ydl(link: str, ydl_opts: dict) -> tuple[str, float | None]:
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(link, download=False)
-    if info is None:
-        raise RuntimeError(f"无法获取视频信息: {link}")
+def _is_storyboard_or_nonmedia_url(f: dict, url: str) -> bool:
+    """
+    YouTube 等会把 storyboard（预览图条）放进 formats，带 url 但无音视频流。
+    误选会导致 FFmpeg 拉 i.ytimg.com/sb/...jpg 等。
+    """
+    if not url:
+        return True
+    low = url.lower()
+    if "i.ytimg.com/sb/" in low or "/storyboard" in low:
+        return True
+    if "ytimg.com" in low and "/sb/" in low:
+        return True
+    fid = str(f.get("format_id") or "")
+    if re.match(r"^sb\d*$", fid, re.I):
+        return True
+    fn = (f.get("format_note") or "") + " " + (f.get("resolution") or "")
+    if "storyboard" in fn.lower():
+        return True
+    ac = f.get("acodec")
+    vc = f.get("vcodec")
+    if ac in (None, "none") and vc in (None, "none"):
+        if low.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif")):
+            return True
+        if "ytimg.com" in low:
+            return True
+    return False
+
+
+def _url_looks_like_http_media_stream(url: str) -> bool:
+    """无 acodec 的条目仅当 URL 明显是 CDN 媒体流时才可作兜底。"""
+    low = url.lower()
+    if "i.ytimg.com/sb/" in low or "/storyboard" in low:
+        return False
+    if "googlevideo.com" in low:
+        return True
+    if ".m3u8" in low or "/manifest/" in low:
+        return True
+    if "videoplayback" in low and ("googlevideo" in low or "googleusercontent" in low):
+        return True
+    if re.search(r"\.(mp4|webm|m4a|mp3|ts|mkv|mov)(\?|$|#)", low):
+        return True
+    return False
+
+
+def _pick_stream_url_from_formats_dict(info: dict) -> tuple[str, float | None] | None:
+    """从 extract_info(..., process=False) 的 info['formats'] 里挑一条可直接给 FFmpeg 的 URL。"""
+    fmts = info.get("formats")
+    if not fmts:
+        return None
+    try:
+        rows = list(fmts)
+    except Exception:
+        return None
+
+    dur = info.get("duration")
+    if dur is not None:
+        try:
+            dur = float(dur)
+        except (TypeError, ValueError):
+            dur = None
+
+    audio_only: list[tuple[float, str]] = []
+    muxed: list[tuple[float, str]] = []
+    fallback_urls: list[str] = []
+
+    for f in rows:
+        u = f.get("url")
+        if not u:
+            continue
+        if _is_storyboard_or_nonmedia_url(f, u):
+            continue
+        ac = f.get("acodec")
+        vc = f.get("vcodec")
+        if ac in (None, "none"):
+            if _url_looks_like_http_media_stream(u):
+                fallback_urls.append(u)
+            continue
+        if vc in (None, "none"):
+            abr = f.get("abr") or 0
+            try:
+                abr = float(abr)
+            except (TypeError, ValueError):
+                abr = 0.0
+            audio_only.append((abr, u))
+        else:
+            tbr = f.get("tbr") or f.get("abr") or 0
+            try:
+                tbr = float(tbr)
+            except (TypeError, ValueError):
+                tbr = 0.0
+            muxed.append((tbr, u))
+
+    if audio_only:
+        audio_only.sort(key=lambda x: x[0], reverse=True)
+        return (audio_only[0][1], dur)
+    if muxed:
+        muxed.sort(key=lambda x: x[0], reverse=True)
+        return (muxed[0][1], dur)
+    if fallback_urls:
+        return (fallback_urls[0], dur)
+    return None
+
+
+def _is_retryable_format_error(e: BaseException) -> bool:
+    err_low = str(e).lower()
+    if "requested format is not available" in err_low:
+        return True
+    if "format is not available" in err_low:
+        return True
+    if "only images are available" in err_low:
+        return True
+    if "no video formats" in err_low or "no audio formats" in err_low:
+        return True
+    if "unable to download" in err_low and "format" in err_low:
+        return True
+    return False
+
+
+def _extract_url_duration_from_merged_info(info: dict) -> tuple[str | None, float | None]:
+    """format 选择器跑完后，从 info.url 或 requested_formats 取可给 FFmpeg 的 URL。"""
+    if not info:
+        return (None, None)
+    dur = info.get("duration")
+    if dur is not None:
+        try:
+            dur = float(dur)
+        except (TypeError, ValueError):
+            dur = None
     url = info.get("url")
-    if not url:
-        formats = info.get("formats") or []
-        for f in formats:
+    if url and not _is_storyboard_or_nonmedia_url({}, url):
+        return (url, dur)
+    rf = info.get("requested_formats")
+    if isinstance(rf, list):
+        for f in rf:
             u = f.get("url")
-            if u and (f.get("vcodec") == "none" or f.get("acodec") != "none"):
-                url = u
-                break
-        if not url and formats:
-            url = next((f.get("url") for f in formats if f.get("url")), None)
-    if not url:
-        raise RuntimeError(f"无法获取流地址: {link}")
-    duration = info.get("duration")
-    return (url, float(duration) if duration is not None else None)
+            if not u or _is_storyboard_or_nonmedia_url(f, u):
+                continue
+            if f.get("acodec") not in (None, "none"):
+                return (u, dur)
+        for f in rf:
+            u = f.get("url")
+            if u and not _is_storyboard_or_nonmedia_url(f, u):
+                return (u, dur)
+    picked = _pick_stream_url_from_formats_dict(info)
+    if picked:
+        return (picked[0], picked[1])
+    return (None, dur)
+
+
+def _ydl_extract_stream_url_resilient(link: str, ydl_opts: dict) -> tuple[str, float | None]:
+    """
+    先 process=False 且不带 format，从 formats 里手选 URL，避免 bestaudio/best 与当前客户端返回的格式表不匹配。
+    失败再按多组 format 字符串回退。
+    """
+    opts_no_fmt = {k: v for k, v in ydl_opts.items() if k != "format"}
+    last_err: BaseException | None = None
+
+    try:
+        with yt_dlp.YoutubeDL(opts_no_fmt) as ydl:
+            info = ydl.extract_info(link, download=False, process=False)
+        if info:
+            picked = _pick_stream_url_from_formats_dict(info)
+            if picked:
+                return picked
+    except Exception as e:
+        last_err = e
+        err_low = str(e).lower()
+        if _is_youtube_link(link) and (
+            "sign in" in err_low
+            or "not a bot" in err_low
+            or ("bot" in err_low and "youtube" in err_low)
+            or "login required" in err_low
+            or ("cookies" in err_low and "youtube" in err_low)
+        ):
+            raise
+
+    format_chain = (
+        ydl_opts.get("format") or "bestaudio/bestaudio*/best/b/worst",
+        "ba/b",
+        "bestvideo+bestaudio/best/ba/b/worst",
+        "bv*+ba/b",
+        "best/worst",
+        "worst",
+    )
+    seen: set[str] = set()
+    for fmt in format_chain:
+        if not fmt or fmt in seen:
+            continue
+        seen.add(fmt)
+        opts = {**ydl_opts, "format": fmt}
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(link, download=False)
+            if info is None:
+                continue
+            url, dur = _extract_url_duration_from_merged_info(info)
+            if url:
+                return (url, dur)
+        except Exception as e:
+            last_err = e
+            err_low = str(e).lower()
+            if _is_youtube_link(link) and (
+                "sign in" in err_low
+                or "not a bot" in err_low
+                or ("bot" in err_low and "youtube" in err_low)
+            ):
+                raise
+            continue
+
+    if last_err:
+        if _is_youtube_link(link):
+            el = str(last_err).lower()
+            if "requested format is not available" in el or "only images are available" in el:
+                raise RuntimeError(
+                    "YouTube 当前没有可用的音视频格式（只有预览图/storyboard 时也会报此错）。\n"
+                    "常见原因：已使用 Cookie 时 yt-dlp 会跳过 android/ios 客户端，主要依赖 web/tv 等接口；"
+                    "若本机未配置 JS 运行环境，「n challenge」解失败会导致拿不到真实音画轨。\n"
+                    "处理建议：按 https://github.com/yt-dlp/yt-dlp/wiki/EJS 安装并配置 Node（或文档中的其它运行时）；"
+                    "执行 uv pip install -U yt-dlp 升级到最新；若出现 mweb 403 相关提示可参考 PO Token 文档。\n\n"
+                    f"原始错误: {last_err}"
+                ) from last_err
+        raise last_err
+    raise RuntimeError(f"无法获取流地址: {link}")
+
+
+def _extract_stream_url_with_ydl(link: str, ydl_opts: dict) -> tuple[str, float | None]:
+    return _ydl_extract_stream_url_resilient(link, ydl_opts)
 
 
 def get_stream_url(link: str) -> tuple[str, float | None]:
