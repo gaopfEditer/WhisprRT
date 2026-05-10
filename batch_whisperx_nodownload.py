@@ -20,6 +20,7 @@ import sys
 import urllib.parse
 import shutil
 import subprocess
+import time
 import traceback
 from pathlib import Path
 
@@ -117,6 +118,13 @@ WHISPER_COMPUTE_TYPE = "float16" if (WHISPER_DEVICE == "cuda" and _use_float16) 
 QWEN_API_KEY = os.environ.get("QWEN_API_KEY", "sk-40fc3963ae51439db02c07d7b9995042")
 QWEN_ENDPOINT = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation"
 QWEN_MODEL = "qwen-turbo"
+# 整理全文：单段 max_tokens 再大也可能不够整期口播，故按字数切块多次调用再拼接（见 _split_plain_text_into_refine_chunks）
+QWEN_REFINE_MAX_TOKENS = int(os.environ.get("QWEN_REFINE_MAX_TOKENS", "8192"))
+QWEN_REFINE_CHUNK_CHARS = int(os.environ.get("QWEN_REFINE_CHUNK_CHARS", "5000"))
+QWEN_SUMMARY_MAX_TOKENS = int(os.environ.get("QWEN_SUMMARY_MAX_TOKENS", "1024"))
+# 摘要只读整理后全文开头若干字（主旨多在前部，避免把超长正文塞进摘要接口）
+QWEN_SUMMARY_SOURCE_CHARS = int(os.environ.get("QWEN_SUMMARY_SOURCE_CHARS", "2000"))
+QWEN_REFINE_TIMEOUT_SEC = int(os.environ.get("QWEN_REFINE_TIMEOUT_SEC", "300"))
 
 # 全局模型实例（避免每次重复加载）
 _whisper_model: WhisperModel | None = None
@@ -908,6 +916,7 @@ def transcribe_audio_array(
     )
     result = []
     last_pct = -1
+    t0 = time.perf_counter()
     for seg in segments_gen:
         result.append((seg.start, seg.end, (seg.text or "").strip()))
         if progress_callback:
@@ -917,7 +926,20 @@ def transcribe_audio_array(
             if pct >= last_pct + 5 or pct == 100:
                 print(f"\r    转写进度: {pct}% ({len(result)} 段)", end="", flush=True)
                 last_pct = pct
-    if last_pct >= 0:
+    elapsed = time.perf_counter() - t0
+    n_chars = sum(len(t) for _, _, t in result)
+    tail = f" | 转写总时间 {elapsed:.1f} 秒 | 约 {n_chars} 字"
+    if progress_callback:
+        if result:
+            print(f"    转写完成: {len(result)} 段{tail}", flush=True)
+    else:
+        if not result:
+            return result
+        if total_sec > 0:
+            pct_final = min(100, int(result[-1][1] / total_sec * 100))
+        else:
+            pct_final = 100
+        print(f"\r    转写进度: {pct_final}% ({len(result)} 段){tail}    ", flush=True)
         print()
     return result
 
@@ -991,8 +1013,53 @@ def extract_plain_text_from_transcript(raw_text: str) -> str:
     return " ".join(texts)
 
 
-def call_qwen(prompt: str) -> str:
-    """调用通义千问 API"""
+def _split_plain_text_into_refine_chunks(text: str, max_chars: int) -> list[str]:
+    """
+    将识别稿切成多段供 Qwen 逐段整理，避免单次生成长度被 max_tokens 截断。
+    优先在换行、句号等处断开。
+    """
+    text = text.strip()
+    if not text:
+        return []
+    max_chars = max(800, max_chars)
+    if len(text) <= max_chars:
+        return [text]
+
+    chunks: list[str] = []
+    start = 0
+    n = len(text)
+    while start < n:
+        ideal_end = min(start + max_chars, n)
+        if ideal_end >= n:
+            tail = text[start:n].strip()
+            if tail:
+                chunks.append(tail)
+            break
+        search_from = start + max(1, max_chars // 4)
+        break_at = ideal_end
+        segment = text[start:ideal_end]
+        for sep in ("\n\n", "\n", "。", "；", "，"):
+            idx = segment.rfind(sep)
+            if idx == -1:
+                continue
+            abs_end = start + idx + len(sep)
+            if abs_end > search_from:
+                break_at = abs_end
+                break
+        piece = text[start:break_at].strip()
+        if not piece:
+            break_at = ideal_end
+            piece = text[start:break_at].strip()
+        if not piece:
+            start = ideal_end
+            continue
+        chunks.append(piece)
+        start = break_at
+    return [c for c in chunks if c]
+
+
+def call_qwen(prompt: str, *, max_tokens: int = 8192, timeout: int = 120) -> str:
+    """调用通义千问 API。max_tokens 为模型单次生成上限，长稿须用大值否则会截断。"""
     if not QWEN_API_KEY:
         raise RuntimeError("QWEN_API_KEY 未配置")
 
@@ -1003,9 +1070,9 @@ def call_qwen(prompt: str) -> str:
     payload = {
         "model": QWEN_MODEL,
         "input": {"messages": [{"role": "user", "content": prompt}]},
-        "parameters": {"temperature": 0.7, "max_tokens": 2000},
+        "parameters": {"temperature": 0.7, "max_tokens": max_tokens},
     }
-    resp = requests.post(QWEN_ENDPOINT, headers=headers, json=payload, timeout=60)
+    resp = requests.post(QWEN_ENDPOINT, headers=headers, json=payload, timeout=timeout)
     if resp.status_code != 200:
         raise RuntimeError(f"Qwen API 调用失败 ({resp.status_code}): {resp.text}")
 
@@ -1037,15 +1104,41 @@ def refine_transcript_with_qwen(name: str, transcript_path: Path) -> Path:
         "- 输出纯文本，不要加标题、前言或总结。\n\n"
         "下面是待整理的原始转写文本：\n"
     )
-    refined_text = call_qwen(system_prompt + plain_text).strip()
+    chunks = _split_plain_text_into_refine_chunks(plain_text, QWEN_REFINE_CHUNK_CHARS)
+    refined_parts: list[str] = []
+    n_chunk = len(chunks)
+    for idx, ch in enumerate(chunks):
+        if n_chunk > 1:
+            print(
+                f">>> Qwen 整理全文第 {idx + 1}/{n_chunk} 段（每段约 {QWEN_REFINE_CHUNK_CHARS} 字内）…",
+                flush=True,
+            )
+            prefix = (
+                f"【说明】这是整期口播转写稿的第 {idx + 1}/{n_chunk} 段，请只整理本段文字，"
+                "不要写摘要、不要臆测其他段内容。\n\n"
+            )
+        else:
+            prefix = ""
+        part = call_qwen(
+            system_prompt + prefix + ch,
+            max_tokens=QWEN_REFINE_MAX_TOKENS,
+            timeout=QWEN_REFINE_TIMEOUT_SEC,
+        ).strip()
+        refined_parts.append(part)
+    refined_text = "\n\n".join(refined_parts)
 
+    summary_source = refined_text[: max(0, QWEN_SUMMARY_SOURCE_CHARS)]
     summary_prompt = (
         "你是一个内容摘要助手。"
         "请为以下文本生成一个简洁准确的摘要，控制在100-200字以内。"
         "摘要应该概括文本的核心内容和主要观点。\n\n"
-        "待摘要的文本：\n"
+        "待摘要的文本（可能仅为全文前部节选，请据此概括主旨即可）：\n"
     )
-    summary = call_qwen(summary_prompt + refined_text).strip()
+    summary = call_qwen(
+        summary_prompt + summary_source,
+        max_tokens=QWEN_SUMMARY_MAX_TOKENS,
+        timeout=60,
+    ).strip()
 
     final_output = f"摘要：{summary}\n\n全文：{refined_text}"
     ensure_dirs()
