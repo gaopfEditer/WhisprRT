@@ -272,6 +272,24 @@
             0%, 100% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.1); }
             50% { box-shadow: 0 0 0 8px rgba(220, 53, 69, 0.3); }
         }
+
+        .youtube-results .yt-item {
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 0.75rem;
+            margin-bottom: 0.75rem;
+            background: #fff;
+        }
+        .youtube-results .yt-item.ok { border-left: 4px solid var(--success-color); }
+        .youtube-results .yt-item.err { border-left: 4px solid #dc3545; }
+        .youtube-results pre.yt-text {
+            max-height: 220px;
+            overflow: auto;
+            font-size: 0.8rem;
+            margin: 0.5rem 0 0;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
     </style>
 </head>
 <body>
@@ -375,6 +393,32 @@
                             <label for="webhookUrl" class="form-label mt-2">Webhook 地址（命中时 POST 推送）</label>
                             <input type="url" id="webhookUrl" class="form-control" placeholder="http://localhost:3123/api/webhook/receive">
                         </div>
+                    </div>
+                </div>
+
+                <div class="card mt-3">
+                    <div class="card-header">
+                        <span><i class="bi bi-youtube"></i> YouTube 字幕</span>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-muted small mb-2">每行粘贴一个视频链接；优先人工字幕后自动字幕。需登录或风控时请配置 Cookie（见项目 USAGE.md）。</p>
+                        <div class="form-group mb-2">
+                            <label for="youtubeUrls" class="form-label">视频链接</label>
+                            <textarea id="youtubeUrls" class="form-control font-monospace" rows="4" placeholder="https://www.youtube.com/watch?v=...&#10;https://youtu.be/..."></textarea>
+                        </div>
+                        <div class="form-group mb-2">
+                            <label for="youtubeLangs" class="form-label">语言偏好（可选）</label>
+                            <input type="text" id="youtubeLangs" class="form-control" placeholder="如 zh-Hans,zh,en 留空则默认 zh / en">
+                        </div>
+                        <div class="d-flex flex-wrap gap-2 mb-2">
+                            <button type="button" class="btn btn-primary btn-sm" onclick="fetchYoutubeSubtitles()">
+                                <i class="bi bi-download"></i> 拉取字幕
+                            </button>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="copyYoutubeApiHint()">
+                                <i class="bi bi-info-circle"></i> 复制接口说明
+                            </button>
+                        </div>
+                        <div id="youtubeResults" class="youtube-results small"></div>
                     </div>
                 </div>
                 
@@ -1106,6 +1150,111 @@
                 renderTranscription();
             });
         });
+
+        function escHtml(s) {
+            if (s == null || s === undefined) return '';
+            const d = document.createElement('div');
+            d.textContent = String(s);
+            return d.innerHTML;
+        }
+
+        const YT_API_HINT = `HTTP 接口（本机端口见配置，默认 5444）：
+GET  单个：/youtube/subtitles?url=编码后的URL&lang=zh-Hans,en
+POST 批量：/youtube/subtitles
+  Content-Type: application/json
+  Body: {"urls":["https://youtu.be/xxx"],"langs":["zh","en"],"include_segments":true}`;
+
+        function parseYoutubeUrls() {
+            const raw = document.getElementById('youtubeUrls').value || '';
+            return raw.split(/[\r\n]+/).map(function(s) { return s.trim(); }).filter(function(s) { return s.length > 0; });
+        }
+
+        function copyYoutubeApiHint() {
+            const ta = document.createElement('textarea');
+            ta.value = YT_API_HINT;
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            showToast('接口说明已复制到剪贴板', 'success');
+        }
+
+        function fetchYoutubeSubtitles() {
+            const urls = parseYoutubeUrls();
+            if (urls.length === 0) {
+                showToast('请输入至少一个 YouTube 链接', 'info');
+                return;
+            }
+            const langsRaw = (document.getElementById('youtubeLangs').value || '').trim();
+            const langs = langsRaw
+                ? langsRaw.split(',').map(function(s) { return s.trim(); }).filter(function(s) { return s.length > 0; })
+                : null;
+            const box = document.getElementById('youtubeResults');
+            box.innerHTML = '<div class="text-muted">正在拉取…</div>';
+
+            fetch('/youtube/subtitles', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ urls: urls, langs: langs, include_segments: true })
+            })
+                .then(function(res) {
+                    if (!res.ok) {
+                        return res.text().then(function(t) { throw new Error(t || res.statusText); });
+                    }
+                    return res.json();
+                })
+                .then(function(data) {
+                    const results = data.results || [];
+                    if (results.length === 0) {
+                        box.innerHTML = '<div class="text-muted">无结果</div>';
+                        return;
+                    }
+                    let html = '';
+                    results.forEach(function(r, idx) {
+                        const ok = r.status === 'ok';
+                        const title = escHtml(r.title || r.video_id || r.url || ('视频 ' + (idx + 1)));
+                        const meta = [
+                            ok ? '成功' : '失败',
+                            r.language ? ('语言: ' + r.language) : '',
+                            r.is_automatic ? '自动字幕' : (ok ? '人工字幕' : '')
+                        ].filter(Boolean).join(' · ');
+                        const err = r.error_message ? escHtml(r.error_message) : '';
+                        const text = escHtml(r.text || '');
+                        html += '<div class="yt-item ' + (ok ? 'ok' : 'err') + '">';
+                        html += '<div class="fw-semibold">' + title + '</div>';
+                        html += '<div class="text-muted">' + meta + '</div>';
+                        if (!ok && err) {
+                            html += '<div class="text-danger small mt-1">' + err + '</div>';
+                        }
+                        if (ok && text) {
+                            html += '<pre class="yt-text">' + text + '</pre>';
+                            html += '<button type="button" class="btn btn-sm btn-outline-primary mt-1" data-yt-copy="' + idx + '">复制纯文本</button>';
+                        }
+                        html += '</div>';
+                    });
+                    box.innerHTML = html;
+                    results.forEach(function(r, idx) {
+                        const btn = box.querySelector('[data-yt-copy="' + idx + '"]');
+                        if (btn && r.text) {
+                            btn.addEventListener('click', function() {
+                                const t = document.createElement('textarea');
+                                t.value = r.text;
+                                document.body.appendChild(t);
+                                t.select();
+                                document.execCommand('copy');
+                                document.body.removeChild(t);
+                                showToast('已复制该条字幕文本', 'success');
+                            });
+                        }
+                    });
+                    const nOk = results.filter(function(x) { return x.status === 'ok'; }).length;
+                    showToast('完成：' + nOk + ' / ' + results.length + ' 条成功', nOk === results.length ? 'success' : 'warning');
+                })
+                .catch(function(err) {
+                    box.innerHTML = '<div class="text-danger">请求失败：' + escHtml(String(err.message || err)) + '</div>';
+                    showToast('拉取字幕失败', 'error');
+                });
+        }
 
         function renderTranscription() {
             transcriptionDiv.innerHTML = '';
