@@ -401,7 +401,7 @@
                         <span><i class="bi bi-youtube"></i> YouTube 字幕</span>
                     </div>
                     <div class="card-body">
-                        <p class="text-muted small mb-2">每行粘贴一个视频链接；优先人工字幕后自动字幕。需登录或风控时请配置 Cookie（见项目 USAGE.md）。</p>
+                        <p class="text-muted small mb-2">每行一个链接。拉字幕与下载一样走 YouTube 风控，无有效 Cookie 常报「Sign in / bot」。请配置 <code>youtube_cookies.txt</code> 或环境变量 <code>YOUTUBE_COOKIES_FROM_BROWSER</code>；仍失败可设 <code>YOUTUBE_ON_BOT_TRY_BROWSER=chrome</code> 后重启服务（见 USAGE.md）。</p>
                         <div class="form-group mb-2">
                             <label for="youtubeUrls" class="form-label">视频链接</label>
                             <textarea id="youtubeUrls" class="form-control font-monospace" rows="4" placeholder="https://www.youtube.com/watch?v=...&#10;https://youtu.be/..."></textarea>

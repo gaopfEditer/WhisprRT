@@ -1,7 +1,12 @@
 """
 YouTube 字幕拉取（yt-dlp）：供 Web 页与 HTTP 接口复用。
-Cookie 与环境变量与批处理脚本约定一致：YOUTUBE_COOKIES_FILE、项目根 youtube_cookies.txt、
-可选 D:\\frontend\\main\\tools\\youtube_cookies.txt、YOUTUBE_COOKIES_FROM_BROWSER。
+
+环境变量（与批处理脚本尽量一致）：
+- YOUTUBE_COOKIES_FILE / YOUTUBE_COOKIES_FROM_BROWSER
+- 项目根 youtube_cookies.txt、macstudioyoutube.com_cookies.txt；可选 D:\\frontend\\main\\tools\\youtube_cookies.txt
+- YOUTUBE_MACSTUDIO_COOKIES_FILE：备用 Cookie 文件路径
+- YOUTUBE_PLAYER_CLIENT：逗号分隔，覆盖默认 player_client 顺序
+- YOUTUBE_ON_BOT_TRY_BROWSER：Cookie 文件仍报 bot 时，改从该浏览器读 Cookie（如 chrome），需先完全退出浏览器
 """
 from __future__ import annotations
 
@@ -20,8 +25,74 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _TOOLS_DEFAULT_COOKIE = Path(r"D:\frontend\main\tools\youtube_cookies.txt")
+_MACSTUDIO_COOKIES = Path(
+    os.environ.get("YOUTUBE_MACSTUDIO_COOKIES_FILE", str(PROJECT_ROOT / "macstudioyoutube.com_cookies.txt"))
+).expanduser()
 
 _SUBTITLE_FORMAT_ORDER = ("json3", "srv3", "srv1", "vtt", "ttml", "srt")
+
+_BOT_HINT_ZH = (
+    " YouTube 对「解析页面 / 取元数据 / 列字幕」与下载视频使用同一套风控，未带有效登录态时常报机器人验证。"
+    " 请在已登录 YouTube 的浏览器导出 Netscape 格式 cookies 为项目根目录 youtube_cookies.txt，"
+    "或设置 YOUTUBE_COOKIES_FILE / YOUTUBE_COOKIES_FROM_BROWSER=chrome（需先完全退出该浏览器）。"
+    " 若 Cookie 文件仍失败，可设 YOUTUBE_ON_BOT_TRY_BROWSER=chrome 再启动本服务。"
+    " 并执行 pip install -U yt-dlp 保持最新。详见 USAGE.md。"
+)
+
+
+def _is_youtube_bot_or_auth_error(err: BaseException) -> bool:
+    s = str(err).lower()
+    return (
+        "sign in" in s
+        or "not a bot" in s
+        or ("bot" in s and "youtube" in s)
+        or "cookies" in s
+        or "login required" in s
+    )
+
+
+def _is_youtube_networkish_error(err: BaseException) -> bool:
+    s = str(err).lower()
+    return any(
+        x in s
+        for x in (
+            "timed out",
+            "timeout",
+            "connection refused",
+            "connection reset",
+            "network is unreachable",
+            "no route to host",
+            "temporary failure",
+            "name or service not known",
+            "ssl",
+            "eof occurred",
+            "unable to download webpage",
+            "errno",
+            "10054",
+            "10060",
+        )
+    )
+
+
+def _is_youtube_format_unavailable_error(err: BaseException) -> bool:
+    """仅要字幕时不应走「选流格式」；若仍触发则换 player_client 再试。"""
+    s = str(err).lower()
+    return (
+        "requested format is not available" in s
+        or "format is not available" in s
+        or "no video formats" in s
+        or "no audio formats" in s
+    )
+
+
+def _youtube_already_uses_cookie_path(opts: dict[str, Any], path: Path) -> bool:
+    cf = opts.get("cookiefile")
+    if not cf or not path.is_file():
+        return False
+    try:
+        return Path(cf).resolve() == path.resolve()
+    except OSError:
+        return os.path.abspath(str(cf)) == os.path.abspath(str(path))
 
 
 def _merge_youtube_ydl_opts(base: dict[str, Any]) -> dict[str, Any]:
@@ -51,11 +122,159 @@ def _merge_youtube_ydl_opts(base: dict[str, Any]) -> dict[str, Any]:
 
     ex = dict(opts.get("extractor_args") or {})
     yt = dict(ex.get("youtube") or {})
-    if not yt.get("player_client"):
-        yt["player_client"] = ["android", "web", "ios"]
+    pc_env = os.environ.get("YOUTUBE_PLAYER_CLIENT", "").strip()
+    if pc_env:
+        yt["player_client"] = [p.strip() for p in pc_env.split(",") if p.strip()]
+    elif not yt.get("player_client"):
+        if opts.get("cookiefile"):
+            yt["player_client"] = [
+                "tv",
+                "tv_embedded",
+                "web_safari",
+                "web",
+                "mweb",
+                "android",
+                "ios",
+            ]
+        else:
+            yt["player_client"] = ["android", "web", "ios"]
     ex["youtube"] = yt
     opts["extractor_args"] = ex
     return opts
+
+
+def _youtube_opts_with_player_client(base: dict[str, Any], clients: list[str]) -> dict[str, Any]:
+    o = {**base}
+    ex = dict(o.get("extractor_args") or {})
+    yt = dict(ex.get("youtube") or {})
+    yt["player_client"] = clients
+    ex["youtube"] = yt
+    o["extractor_args"] = ex
+    return o
+
+
+def _youtube_player_client_variants(base_opts: dict[str, Any]) -> list[list[str]]:
+    ex = base_opts.get("extractor_args") or {}
+    yt = ex.get("youtube") or {}
+    first = yt.get("player_client")
+    if isinstance(first, str):
+        current: list[str] = [first]
+    elif isinstance(first, (list, tuple)):
+        current = [str(x) for x in first]
+    else:
+        current = ["android", "web", "ios"]
+
+    using_cookiefile = bool(base_opts.get("cookiefile"))
+    tv_first: list[list[str]] = [
+        ["tv", "web_safari", "web", "android"],
+        ["tv", "tv_embedded", "web"],
+        ["web_safari", "web", "mweb"],
+        ["tv_embedded", "web"],
+        ["android", "web", "ios"],
+    ]
+    android_first: list[list[str]] = [
+        ["web", "android", "ios"],
+        ["android", "ios", "web"],
+        ["android"],
+        ["web"],
+        ["ios", "web", "android"],
+        ["mweb", "web", "android"],
+    ]
+
+    fallbacks: list[list[str]] = [current] + (tv_first if using_cookiefile else android_first)
+    seen: set[tuple[str, ...]] = set()
+    out: list[list[str]] = []
+    for chain in fallbacks:
+        key = tuple(chain)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(chain)
+    return out
+
+
+def _youtube_opts_macstudio_only(base: dict[str, Any], mac_path: Path) -> dict[str, Any]:
+    opts = {**base}
+    opts.pop("cookiesfrombrowser", None)
+    if mac_path.is_file():
+        opts["cookiefile"] = str(mac_path.resolve())
+    ex = dict(opts.get("extractor_args") or {})
+    yt = dict(ex.get("youtube") or {})
+    yt["player_client"] = ["tv", "tv_embedded", "web_safari", "web", "mweb", "android", "ios"]
+    ex["youtube"] = yt
+    opts["extractor_args"] = ex
+    return opts
+
+
+def _youtube_opts_browser_only(base: dict[str, Any], browser_spec: str) -> dict[str, Any]:
+    opts = {**base}
+    opts.pop("cookiefile", None)
+    spec = browser_spec.strip()
+    parts = spec.split(":", 1)
+    name = parts[0].strip()
+    if len(parts) > 1 and parts[1].strip():
+        opts["cookiesfrombrowser"] = (name, parts[1].strip())
+    else:
+        opts["cookiesfrombrowser"] = (name,)
+    pc_env = os.environ.get("YOUTUBE_PLAYER_CLIENT", "").strip()
+    yt: dict[str, Any] = {}
+    if pc_env:
+        yt["player_client"] = [p.strip() for p in pc_env.split(",") if p.strip()]
+    else:
+        yt["player_client"] = ["android", "web", "ios"]
+    opts["extractor_args"] = {"youtube": yt}
+    return opts
+
+
+def _extract_youtube_info_resilient(url: str, base_opts: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """
+    多组 player_client 轮换提取；失败时依次尝试专用 macstudio Cookie、
+    YOUTUBE_ON_BOT_TRY_BROWSER（与 batch_whisperx_nodownload 行为对齐）。
+
+    Returns:
+        (info_dict, ydl_opts) — 后者用于同一会话 urlopen 拉取字幕内容。
+    """
+    attempts: list[tuple[str, dict[str, Any]]] = []
+
+    primary = _merge_youtube_ydl_opts(base_opts)
+    attempts.append(("primary", primary))
+
+    if _MACSTUDIO_COOKIES.is_file() and not _youtube_already_uses_cookie_path(primary, _MACSTUDIO_COOKIES):
+        attempts.append(("macstudio_cookie_file", _youtube_opts_macstudio_only(base_opts, _MACSTUDIO_COOKIES)))
+
+    on_bot_browser = os.environ.get("YOUTUBE_ON_BOT_TRY_BROWSER", "").strip()
+    if on_bot_browser:
+        attempts.append(("cookies_from_browser", _youtube_opts_browser_only(base_opts, on_bot_browser)))
+
+    last_err: BaseException | None = None
+    for label, ydl_opts in attempts:
+        for clients in _youtube_player_client_variants(ydl_opts):
+            opts_try = _youtube_opts_with_player_client(ydl_opts, clients)
+            try:
+                with yt_dlp.YoutubeDL(opts_try) as ydl:
+                    # 不做 format 选择与后处理，避免「Requested format is not available」
+                    #（字幕元数据在 IE 阶段已有，与 batch_whisperx_nodownload 的 process=False 思路一致）
+                    info = ydl.extract_info(url, download=False, process=False)
+                if isinstance(info, dict):
+                    return (info, opts_try)
+            except Exception as e:
+                last_err = e
+                if (
+                    _is_youtube_bot_or_auth_error(e)
+                    or _is_youtube_networkish_error(e)
+                    or _is_youtube_format_unavailable_error(e)
+                ):
+                    logger.debug(
+                        "yt-dlp extract retry [%s] clients=%s: %s",
+                        label,
+                        clients,
+                        e,
+                    )
+                    continue
+                raise
+    if last_err is not None:
+        raise last_err
+    raise RuntimeError("yt-dlp 未能返回视频信息")
 
 
 def _is_youtube_url(url: str) -> bool:
@@ -235,78 +454,85 @@ def fetch_one(
         "skip_download": True,
         "noplaylist": True,
     }
-    ydl_opts = _merge_youtube_ydl_opts(base_opts)
 
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(u, download=False)
-            if not isinstance(info, dict):
-                out["error_message"] = "无法解析视频信息"
-                return out
-
-            out["title"] = info.get("title")
-            out["video_id"] = info.get("id")
-            if info.get("_type") == "playlist":
-                out["error_message"] = "请提供单个视频链接，而非播放列表"
-                return out
-
-            manual, automatic = _collect_subtitle_languages(info)
-            all_manual = list(manual.keys())
-            all_auto = list(automatic.keys())
-
-            chosen_lang: str | None = None
-            is_auto = False
-            fmts: list[dict[str, Any]] | None = None
-
-            if all_manual:
-                chosen_lang = _pick_language(all_manual, prefs)
-                if chosen_lang:
-                    fmts = manual.get(chosen_lang) or []
-            if not fmts and all_auto:
-                is_auto = True
-                chosen_lang = _pick_language(all_auto, prefs)
-                if chosen_lang:
-                    fmts = automatic.get(chosen_lang) or []
-
-            if not fmts or not chosen_lang:
-                out["error_message"] = (
-                    "未找到可用字幕（无人工字幕且无自动字幕，或语言不匹配）。"
-                    "可尝试换 lang 参数，或为需登录的视频配置 Cookie。"
-                )
-                return out
-
-            fmt_entry = _pick_format_entry(fmts)
-            if not fmt_entry:
-                out["error_message"] = "字幕格式列表为空"
-                return out
-
-            raw, ext = _read_subtitle_body(ydl, fmt_entry)
-            out["language"] = chosen_lang
-            out["is_automatic"] = is_auto
-            out["subtitle_format"] = ext
-
-            segments: list[dict[str, Any]] = []
-            plain = ""
-            if ext == "json3":
-                segments, plain = _parse_json3(raw)
-            elif ext in ("srv1", "srv3"):
-                segments, plain = _parse_srv_xml(raw)
-                if not plain and raw.lstrip().startswith("WEBVTT"):
-                    segments, plain = _parse_vtt(raw)
-            elif ext == "vtt":
-                segments, plain = _parse_vtt(raw)
-            else:
-                plain = re.sub(r"\s+", " ", raw).strip()
-                segments = [{"start": 0.0, "end": 0.0, "text": plain}]
-
-            out["segments"] = segments
-            out["text"] = plain
-            out["status"] = "ok"
+        info, ydl_opts_used = _extract_youtube_info_resilient(u, base_opts)
+        if not isinstance(info, dict):
+            out["error_message"] = "无法解析视频信息"
             return out
 
+        out["title"] = info.get("title")
+        out["video_id"] = info.get("id")
+        if info.get("_type") == "playlist":
+            out["error_message"] = "请提供单个视频链接，而非播放列表"
+            return out
+
+        manual, automatic = _collect_subtitle_languages(info)
+        all_manual = list(manual.keys())
+        all_auto = list(automatic.keys())
+
+        chosen_lang: str | None = None
+        is_auto = False
+        fmts: list[dict[str, Any]] | None = None
+
+        if all_manual:
+            chosen_lang = _pick_language(all_manual, prefs)
+            if chosen_lang:
+                fmts = manual.get(chosen_lang) or []
+        if not fmts and all_auto:
+            is_auto = True
+            chosen_lang = _pick_language(all_auto, prefs)
+            if chosen_lang:
+                fmts = automatic.get(chosen_lang) or []
+
+        if not fmts or not chosen_lang:
+            out["error_message"] = (
+                "未找到可用字幕（无人工字幕且无自动字幕，或语言不匹配）。"
+                "可尝试换 lang 参数，或为需登录的视频配置 Cookie。"
+            )
+            return out
+
+        fmt_entry = _pick_format_entry(fmts)
+        if not fmt_entry:
+            out["error_message"] = "字幕格式列表为空"
+            return out
+
+        with yt_dlp.YoutubeDL(ydl_opts_used) as ydl:
+            raw, ext = _read_subtitle_body(ydl, fmt_entry)
+        out["language"] = chosen_lang
+        out["is_automatic"] = is_auto
+        out["subtitle_format"] = ext
+
+        segments: list[dict[str, Any]] = []
+        plain = ""
+        if ext == "json3":
+            segments, plain = _parse_json3(raw)
+        elif ext in ("srv1", "srv3"):
+            segments, plain = _parse_srv_xml(raw)
+            if not plain and raw.lstrip().startswith("WEBVTT"):
+                segments, plain = _parse_vtt(raw)
+        elif ext == "vtt":
+            segments, plain = _parse_vtt(raw)
+        else:
+            plain = re.sub(r"\s+", " ", raw).strip()
+            segments = [{"start": 0.0, "end": 0.0, "text": plain}]
+
+        out["segments"] = segments
+        out["text"] = plain
+        out["status"] = "ok"
+        return out
+
     except Exception as e:
-        logger.exception("YouTube 字幕拉取失败: %s", u)
-        out["error_message"] = str(e)
+        if _is_youtube_bot_or_auth_error(e):
+            logger.warning("YouTube 字幕拉取被拒绝（需登录/Cookie）: %s — %s", u, e)
+        elif _is_youtube_format_unavailable_error(e):
+            logger.warning("YouTube 字幕拉取失败（格式/客户端不匹配，已用尽重试）: %s — %s", u, e)
+        else:
+            logger.exception("YouTube 字幕拉取失败: %s", u)
+        msg = str(e)
+        if _is_youtube_bot_or_auth_error(e):
+            msg = msg + _BOT_HINT_ZH
+        out["error_message"] = msg
         return out
 
 
