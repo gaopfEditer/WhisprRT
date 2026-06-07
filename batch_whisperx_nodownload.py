@@ -16,8 +16,10 @@ import asyncio
 import json
 import os
 import re
+import socket
 import sys
 import urllib.parse
+import urllib.request
 import shutil
 import subprocess
 import time
@@ -41,10 +43,10 @@ def get_ffmpeg_path() -> str:
     )
 
 
-def _ffmpeg_proxy_cli_args() -> list[str]:
+def _get_http_proxy_url() -> str:
     """
-    FFmpeg 拉取 https 输入时不会自动使用 HTTPS_PROXY（与 curl 不同），需显式传入 -http_proxy / -socks_proxy。
-    读取顺序：FFMPEG_HTTP_PROXY → HTTPS_PROXY / https_proxy / HTTP_PROXY / http_proxy → ALL_PROXY / all_proxy。
+    与 requests/urllib 一致的代理发现顺序。
+    macOS 系统代理（如 Clash 127.0.0.1:7890）常只在 urllib.request.getproxies() 里，不在环境变量中。
     """
     url = os.environ.get("FFMPEG_HTTP_PROXY", "").strip()
     if not url:
@@ -58,11 +60,59 @@ def _ffmpeg_proxy_cli_args() -> list[str]:
             if url:
                 break
     if not url:
+        try:
+            proxies = urllib.request.getproxies()
+            url = (proxies.get("https") or proxies.get("http") or "").strip()
+        except Exception:
+            pass
+    return url
+
+
+def _ffmpeg_proxy_cli_args() -> list[str]:
+    """
+    FFmpeg 拉取 https 输入时不会自动使用 HTTPS_PROXY（与 curl 不同），需显式传入 -http_proxy / -socks_proxy。
+    读取顺序：FFMPEG_HTTP_PROXY → 环境变量 → urllib.request.getproxies()（系统/Clash 代理）。
+    """
+    url = _get_http_proxy_url()
+    if not url:
         return []
     low = url.lower()
     if low.startswith("socks5://") or low.startswith("socks://"):
         return ["-socks_proxy", url]
     return ["-http_proxy", url]
+
+
+def _is_hostname_dns_blocked(hostname: str) -> bool:
+    """部分网络/去广告 DNS 会把 bin.bnbstatic.com 解析到 0.0.0.0，直连 FFmpeg 会 Connection refused。"""
+    try:
+        ip = socket.gethostbyname(hostname)
+    except OSError:
+        return True
+    return ip in ("0.0.0.0", "127.0.0.1")
+
+
+def _warn_if_bnbstatic_needs_proxy(stream_url: str) -> None:
+    global _ffmpeg_proxy_logged
+    if "bnbstatic.com" not in stream_url:
+        return
+    host = urllib.parse.urlparse(stream_url).hostname or ""
+    if not host or not _is_hostname_dns_blocked(host):
+        return
+    proxy = _get_http_proxy_url()
+    if proxy:
+        if not _ffmpeg_proxy_logged:
+            _ffmpeg_proxy_logged = True
+            print(
+                f">>> 检测到 {host} 被本地 DNS 拦截（解析到 0.0.0.0），"
+                f"FFmpeg 将通过代理拉流: {proxy}",
+                flush=True,
+            )
+        return
+    raise RuntimeError(
+        f"无法直连 {host}：本地 DNS 将其解析为 0.0.0.0（常见于去广告 DNS），"
+        "而 FFmpeg 未配置代理。\n"
+        "处理：开启 Clash/V2Ray 系统代理，或执行 export HTTPS_PROXY=http://127.0.0.1:7890 后重试。"
+    )
 
 
 import requests
@@ -215,6 +265,272 @@ def ensure_dirs():
 def _is_youtube_link(link: str) -> bool:
     low = link.lower()
     return "youtube.com" in low or "youtu.be" in low or "m.youtube.com" in low
+
+
+def _is_binance_square_link(link: str) -> bool:
+    low = link.lower()
+    return "binance.com" in low and "/square/" in low
+
+
+def _parse_binance_square_content_id(link: str) -> str | None:
+    """从币安广场链接解析内容 id，如 square/audio?id=…、square/post/{id}。"""
+    parsed = urllib.parse.urlparse(link)
+    if "binance.com" not in parsed.netloc.lower() or "/square/" not in parsed.path.lower():
+        return None
+    qs = urllib.parse.parse_qs(parsed.query)
+    for key in ("id", "contentId", "content_id"):
+        vals = qs.get(key)
+        if vals and str(vals[0]).strip().isdigit():
+            return str(vals[0]).strip()
+    m = re.search(r"/square/(?:post|audio|video|live)/(\d+)", parsed.path, re.I)
+    if m:
+        return m.group(1)
+    return None
+
+
+def _cookie_header_from_file(cookie_path: str, domain_suffix: str = "binance.com") -> str:
+    """Netscape cookies.txt → Cookie 请求头；若已是单行 Cookie 则原样返回。"""
+    try:
+        text = Path(cookie_path).read_text(encoding="utf-8", errors="ignore").strip()
+    except OSError:
+        return ""
+    if not text:
+        return ""
+    if not text.lstrip().startswith("#"):
+        return text
+    pairs: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) < 7:
+            continue
+        domain, _flag, _path, _secure, _exp, name, value = parts[:7]
+        if domain_suffix in domain.lstrip("."):
+            pairs.append(f"{name}={value}")
+    return "; ".join(pairs)
+
+
+def _binance_square_api_headers() -> dict[str, str]:
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json",
+        "Referer": "https://www.binance.com/",
+        "clienttype": "web",
+    }
+    lang = os.environ.get("BINANCE_SQUARE_LANG", "zh-CN").strip() or "zh-CN"
+    headers["lang"] = lang
+    cookie_file = os.environ.get("BINANCE_COOKIES_FILE", "").strip()
+    if not cookie_file:
+        for candidate in (_SCRIPT_DIR / "binance_cookies.txt", CONFIG_PATH.parent / "binance_cookies.txt"):
+            if candidate.is_file():
+                cookie_file = str(candidate.resolve())
+                break
+    if cookie_file and os.path.isfile(cookie_file):
+        cookie_hdr = _cookie_header_from_file(cookie_file, "binance.com")
+        if cookie_hdr:
+            headers["Cookie"] = cookie_hdr
+    return headers
+
+
+def _binance_square_fetch_content_detail(content_id: str) -> dict:
+    """调用币安广场内部接口（yt-dlp 无 Binance extractor）。"""
+    api_tpl = os.environ.get(
+        "BINANCE_SQUARE_DETAIL_API",
+        "https://www.binance.com/bapi/composite/v3/friendly/pgc/special/content/detail/{id}",
+    ).strip()
+    url = api_tpl.format(id=content_id)
+    resp = requests.get(url, headers=_binance_square_api_headers(), timeout=30)
+    if resp.status_code != 200:
+        raise RuntimeError(f"币安广场内容接口 HTTP {resp.status_code}: {resp.text[:300]}")
+    payload = resp.json()
+    if payload.get("code") != "000000":
+        raise RuntimeError(
+            f"币安广场内容接口返回异常 code={payload.get('code')!r}: {payload.get('message') or payload}"
+        )
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise RuntimeError(f"币安广场内容接口无 data 字段: {payload}")
+    return data
+
+
+def _binance_square_is_audiospace_content(data: dict, link: str = "") -> bool:
+    """语音空间 / Audio Space 帖子（/square/audio），完整录音在 spaceLiveReplayLink，不是 livePullUrls。"""
+    if "/square/audio" in link.lower():
+        return True
+    if data.get("extraFeature") == "SPACE_LIVE":
+        return True
+    if data.get("liveType") == 5:
+        return True
+    return False
+
+
+def _binance_square_parse_duration(data: dict) -> float | None:
+    vo = data.get("videoVO") if isinstance(data.get("videoVO"), dict) else {}
+    for src in (vo, data):
+        for key in ("spaceLiveReplayDuration", "videoTimeSeconds", "liveDurationTime"):
+            raw = src.get(key)
+            if raw is None:
+                continue
+            try:
+                sec = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if sec > 0:
+                return sec
+    return None
+
+
+def _binance_square_vod_stream_candidates(data: dict) -> list[str]:
+    """点播/回放 URL（完整录音），不含 bblivestream 实时流。"""
+    vo = data.get("videoVO") if isinstance(data.get("videoVO"), dict) else {}
+    candidates: list[str] = []
+    for src in (data, vo):
+        for key in (
+            "spaceLiveReplayLink",
+            "videoLink1080p",
+            "videoLink720p",
+            "videoLink480p",
+            "videoLink",
+        ):
+            u = src.get(key)
+            if isinstance(u, str) and u.strip().startswith(("http://", "https://")):
+                candidates.append(u.strip())
+    seen: set[str] = set()
+    out: list[str] = []
+    for u in candidates:
+        if u in seen:
+            continue
+        seen.add(u)
+        out.append(u)
+    return out
+
+
+def _is_binance_live_pull_url(url: str) -> bool:
+    """bblivestream 的 /live/ 地址为实时窗口流，FFmpeg 会一直等待导致卡住。"""
+    low = url.lower()
+    return "bblivestream.com" in low and "/live/" in low
+
+
+def _binance_square_pick_vod_stream(data: dict) -> tuple[str, float | None] | None:
+    duration = _binance_square_parse_duration(data)
+    for u in _binance_square_vod_stream_candidates(data):
+        return (u, duration)
+    return None
+
+
+def _binance_square_pick_stream(data: dict, *, allow_live_pull: bool = True) -> tuple[str, float | None]:
+    """从内容详情里挑选 FFmpeg 可拉的音/视频 URL 与时长（秒）。"""
+    picked = _binance_square_pick_vod_stream(data)
+    if picked is not None:
+        return picked
+
+    if not allow_live_pull:
+        raise RuntimeError(
+            "币安广场语音空间尚无完整回放地址（spaceLiveReplayLink 为空），"
+            f" contentId={data.get('id')!r}。"
+        )
+
+    duration = _binance_square_parse_duration(data)
+    live = data.get("livePullUrls") if isinstance(data.get("livePullUrls"), dict) else {}
+    for key in ("flvPlayUrl", "hlsPlayUrl"):
+        u = live.get(key)
+        if isinstance(u, str) and u.strip().startswith(("http://", "https://")):
+            return (u.strip(), duration)
+
+    raise RuntimeError(
+        "币安广场内容未找到可播放的音视频地址。"
+        f" contentId={data.get('id')!r}, liveStatus={data.get('liveStatus')!r}, "
+        f"videoProcessStatus={data.get('videoProcessStatus')!r}。"
+        " 常见原因：回放转码未完成（spaceLiveReplayLink 为空），或需配置 BINANCE_COOKIES_FILE。"
+    )
+
+
+def _binance_square_fetch_detail_with_replay(link: str, content_id: str) -> dict:
+    """
+    语音空间完整录音在 spaceLiveReplayLink（VOD m3u8），生成前 API 只有 livePullUrls，
+    后者会让 FFmpeg 无限等待。对 Audio Space 轮询直到回放地址就绪。
+    """
+    wait_sec = int(os.environ.get("BINANCE_SQUARE_REPLAY_WAIT_SEC", "300"))
+    poll_sec = max(5, int(os.environ.get("BINANCE_SQUARE_REPLAY_POLL_SEC", "15")))
+    audiospace = False
+    deadline = time.time() + max(0, wait_sec)
+    attempt = 0
+    last_detail: dict | None = None
+
+    while True:
+        attempt += 1
+        detail = _binance_square_fetch_content_detail(content_id)
+        last_detail = detail
+        if not audiospace:
+            audiospace = _binance_square_is_audiospace_content(detail, link)
+
+        picked = _binance_square_pick_vod_stream(detail)
+        if picked is not None:
+            if attempt > 1:
+                url, dur = picked
+                print(
+                    f"    币安广场回放地址已就绪（第 {attempt} 次查询，时长约 {dur:.0f} 秒）"
+                    if dur
+                    else f"    币安广场回放地址已就绪（第 {attempt} 次查询）",
+                    flush=True,
+                )
+            return detail
+
+        if audiospace:
+            if time.time() >= deadline:
+                break
+            print(
+                "    等待币安广场完整回放生成（spaceLiveReplayLink）…"
+                f" 第 {attempt} 次，尚未就绪，{poll_sec}s 后重试",
+                flush=True,
+            )
+            time.sleep(poll_sec)
+            continue
+
+        # 非语音空间：允许回退到 livePullUrls
+        _binance_square_pick_stream(detail, allow_live_pull=True)
+        return detail
+
+    assert last_detail is not None
+    raise RuntimeError(
+        f"币安广场语音空间回放尚未生成（contentId={content_id}）。"
+        f" 已等待 {wait_sec} 秒，spaceLiveReplayLink 仍为空。"
+        " 这是已结束的 Audio Space 录音，平台需先转码；请稍后重试，"
+        "或增大 BINANCE_SQUARE_REPLAY_WAIT_SEC。"
+        " 切勿使用 livePullUrls 实时流转写，会导致 FFmpeg 卡住且内容不完整。"
+    )
+
+
+def _get_binance_square_stream_url(link: str) -> tuple[str, float | None]:
+    content_id = _parse_binance_square_content_id(link)
+    if not content_id:
+        raise RuntimeError(
+            f"无法从币安广场链接解析内容 id（需 square/audio?id=… 或 square/post/{{id}} 等形式）: {link}"
+        )
+    detail = _binance_square_fetch_detail_with_replay(link, content_id)
+    audiospace = _binance_square_is_audiospace_content(detail, link)
+    picked = _binance_square_pick_vod_stream(detail)
+    if picked is None:
+        stream_url, duration = _binance_square_pick_stream(detail, allow_live_pull=not audiospace)
+    else:
+        stream_url, duration = picked
+    title = (detail.get("title") or "").strip()
+    if title:
+        print(f"    币安广场: {title[:80]}{'…' if len(title) > 80 else ''}", flush=True)
+    if duration and duration > 0:
+        print(f"    音频时长约 {duration:.0f} 秒（来自回放/点播地址）", flush=True)
+    elif _is_binance_live_pull_url(stream_url):
+        print(
+            "    警告: 当前仅有 bblivestream 实时流地址，转写可能不完整；"
+            "建议等待 spaceLiveReplayLink 生成后重试。",
+            flush=True,
+        )
+    return (stream_url, duration)
 
 
 def _youtube_cookie_hint() -> str:
@@ -748,6 +1064,9 @@ def get_stream_url(link: str) -> tuple[str, float | None]:
         except Exception as e:
             raise RuntimeError(f"{douyin_cookie_hint}\n原始错误: {e}") from e
 
+    if _is_binance_square_link(link):
+        return _get_binance_square_stream_url(link)
+
     if _is_youtube_link(link):
         yt_base = {**ydl_opts}
         ydl_opts = _merge_youtube_ydl_opts(ydl_opts)
@@ -834,6 +1153,7 @@ def stream_to_audio_array(stream_url: str, duration_sec: float | None = None) ->
     若提供 duration_sec，会按读取字节数估算并打印转码进度。
     """
     global _ffmpeg_proxy_logged
+    _warn_if_bnbstatic_needs_proxy(stream_url)
     cmd = [
         get_ffmpeg_path(),
         "-hide_banner", "-loglevel", "error",
@@ -852,6 +1172,16 @@ def stream_to_audio_array(stream_url: str, duration_sec: float | None = None) ->
             "-headers",
             "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\nReferer: https://www.bilibili.com/\r\n",
         ])
+    elif any(x in stream_url for x in ("bblivestream.com", "binance.com", "bnbstatic.com")):
+        cmd.extend([
+            "-headers",
+            "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\nReferer: https://www.binance.com/\r\n",
+        ])
+        if _is_binance_live_pull_url(stream_url):
+            idle_sec = max(5, int(os.environ.get("BINANCE_LIVE_PULL_IDLE_TIMEOUT_SEC", "20")))
+            cmd.extend(["-rw_timeout", str(idle_sec * 1_000_000)])
+        elif ".m3u8" in stream_url.lower():
+            cmd.extend(["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"])
     cmd.extend([
         "-i", stream_url,
         "-f", "s16le",
