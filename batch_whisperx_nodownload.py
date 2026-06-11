@@ -8,8 +8,8 @@
   pip install yt-dlp faster-whisper numpy requests
 
 若报错 cudnn_ops64_9.dll / cudnnCreateTensorDescriptor：说明缺 cuDNN 或未加入 PATH，
-  可强制用 CPU 运行（较慢但无需 GPU）：运行前设置环境变量 USE_CPU=1
-  PowerShell: $env:USE_CPU="1"; python batch_whisperx_nodownload.py
+  可加 --cpu 强制 CPU，或设置环境变量 USE_CPU=1
+  PowerShell: python batch_whisperx_nodownload.py --cpu
 """
 import argparse
 import asyncio
@@ -149,20 +149,44 @@ _youtube_cookie_thin_warned = False
 # faster-whisper 参数
 WHISPER_MODEL = "large-v3-turbo"
 WHISPER_LANGUAGE = "zh"
+WHISPER_DEVICE = "cpu"
+WHISPER_COMPUTE_TYPE = "int8"
+_whisper_device_configured = False
 
-def _detect_device():
+
+def _detect_device(*, force_cpu: bool = False) -> str:
+    """默认优先 GPU（CUDA）；--cpu 或 USE_CPU=1 时用 CPU。WHISPER_DEVICE 环境变量可显式指定。"""
+    if force_cpu:
+        return "cpu"
     if os.environ.get("USE_CPU", "").strip().lower() in ("1", "true", "yes"):
         return "cpu"
+    env_dev = os.environ.get("WHISPER_DEVICE", "").strip().lower()
+    if env_dev:
+        return env_dev
     try:
         import ctranslate2
-        return "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
-    except Exception:
-        return "cpu"
 
-WHISPER_DEVICE = _detect_device()
-# 默认用 int8 兼容更多 GPU（部分显卡不支持 float16）；需要 float16 可设环境变量 USE_FLOAT16=1
-_use_float16 = os.environ.get("USE_FLOAT16", "").strip().lower() in ("1", "true", "yes")
-WHISPER_COMPUTE_TYPE = "float16" if (WHISPER_DEVICE == "cuda" and _use_float16) else "int8"
+        if ctranslate2.get_cuda_device_count() > 0:
+            return "cuda"
+    except Exception:
+        pass
+    return "cpu"
+
+
+def _compute_type_for_device(device: str) -> str:
+    use_float16 = os.environ.get("USE_FLOAT16", "").strip().lower() in ("1", "true", "yes")
+    if device == "cuda" and use_float16:
+        return "float16"
+    return "int8"
+
+
+def configure_whisper_device(*, force_cpu: bool = False) -> None:
+    """在 main 解析 --cpu 后调用；未调用时 get_whisper_model 首次加载前会自动 configure（默认 GPU）。"""
+    global WHISPER_DEVICE, WHISPER_COMPUTE_TYPE, _whisper_device_configured, _whisper_model
+    WHISPER_DEVICE = _detect_device(force_cpu=force_cpu)
+    WHISPER_COMPUTE_TYPE = _compute_type_for_device(WHISPER_DEVICE)
+    _whisper_device_configured = True
+    _whisper_model = None
 
 # 通义千问配置（与 batch_whisperx 相同）
 QWEN_API_KEY = os.environ.get("QWEN_API_KEY", "sk-40fc3963ae51439db02c07d7b9995042")
@@ -194,7 +218,9 @@ def _is_cuda_runtime_missing_error(e: BaseException) -> bool:
 
 
 def get_whisper_model() -> WhisperModel:
-    global _whisper_model, WHISPER_DEVICE, WHISPER_COMPUTE_TYPE
+    global _whisper_model, WHISPER_DEVICE, WHISPER_COMPUTE_TYPE, _whisper_device_configured
+    if not _whisper_device_configured:
+        configure_whisper_device(force_cpu=False)
     if _whisper_model is None:
         print(f"\n>>> 加载 Whisper 模型: {WHISPER_MODEL} ({WHISPER_DEVICE}, {WHISPER_COMPUTE_TYPE})")
         try:
@@ -1769,7 +1795,14 @@ if __name__ == "__main__":
     )
     parser.add_argument("--host", default=REALTIME_HOST, help="realtime 模式监听地址")
     parser.add_argument("--port", type=int, default=REALTIME_PORT, help="realtime 模式监听端口")
+    parser.add_argument(
+        "--cpu",
+        action="store_true",
+        help="强制使用 CPU 转写（默认尽量使用 GPU/CUDA；无可用 GPU 时仍为 CPU）",
+    )
     args = parser.parse_args()
+
+    configure_whisper_device(force_cpu=args.cpu)
 
     if args.refresh_youtube_cookies:
         spec = (args.browser or os.environ.get("YOUTUBE_COOKIES_FROM_BROWSER", "chrome")).strip()
