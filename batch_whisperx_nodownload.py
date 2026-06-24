@@ -1795,11 +1795,11 @@ if __name__ == "__main__":
     )
     parser.add_argument("--host", default=REALTIME_HOST, help="realtime 模式监听地址")
     parser.add_argument("--port", type=int, default=REALTIME_PORT, help="realtime 模式监听端口")
-    # parser.add_argument(
-    #     "--cpu",
-    #     action="store_true",
-    #     help="强制使用 CPU 转写（默认尽量使用 GPU/CUDA；无可用 GPU 时仍为 CPU）",
-    # )
+    parser.add_argument(
+        "--cpu",
+        action="store_true",
+        help="强制使用 CPU 转写（默认尽量使用 GPU/CUDA；无可用 GPU 时仍为 CPU）",
+    )
     args = parser.parse_args()
 
     configure_whisper_device(force_cpu=args.cpu)
