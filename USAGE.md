@@ -17,6 +17,10 @@ python -m app.main
 
 ```powershell
 python batch_whisperx_nodownload.py --mode file
+
+# 使用多线程
+export OMP_NUM_THREADS=8 测试多线程会不会快
+python batch_whisperx_nodownload.py
 ```
 
 **命令行 URL 模式（只要出现 `--url` 即不读 `videos.json`，默认 `--mode file` 可不写）：**
