@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>评论角度助手</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header class="top">
+    <div>
+      <h1>评论角度助手</h1>
+      <p class="sub">贴文上下文 → 多条候选 → 择一使用</p>
+    </div>
+    <button type="button" id="btnSettings" class="ghost" title="设置">设置</button>
+  </header>
+
+  <section id="settingsPanel" class="panel hidden">
+    <label class="field">
+      <span>API Key</span>
+      <input id="apiKey" type="password" placeholder="sk-..." autocomplete="off" />
+    </label>
+    <label class="field">
+      <span>API Base（OpenAI 兼容）</span>
+      <input id="apiBase" type="text" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" />
+    </label>
+    <label class="field">
+      <span>模型</span>
+      <input id="model" type="text" placeholder="qwen-turbo / gpt-4o-mini" />
+    </label>
+    <label class="field">
+      <span>每次生成条数</span>
+      <input id="count" type="number" min="2" max="8" value="4" />
+    </label>
+    <div class="row">
+      <button type="button" id="btnSaveSettings" class="primary">保存设置</button>
+      <button type="button" id="btnCloseSettings" class="ghost">关闭</button>
+    </div>
+    <p class="hint">推荐通义兼容模式：Base 填 <code>.../compatible-mode/v1</code>，模型如 <code>qwen-turbo</code>。</p>
+  </section>
+
+  <section class="panel">
+    <div class="row between">
+      <label class="field grow">
+        <span>角色 / 评论角度</span>
+        <select id="rolePreset"></select>
+      </label>
+    </div>
+    <label class="field">
+      <span>自定义角度说明（可改）</span>
+      <textarea id="roleCustom" rows="3" placeholder="例如：理性投资者，关注风险与逻辑，语气克制，不吹不黑"></textarea>
+    </label>
+    <label class="field">
+      <span>贴文上下文</span>
+      <textarea id="context" rows="5" placeholder="将自动读取当前页选区或贴文；也可手动粘贴"></textarea>
+    </label>
+    <div class="row">
+      <button type="button" id="btnRefreshCtx" class="ghost">从当前页读取</button>
+      <button type="button" id="btnGenerate" class="primary">生成评论</button>
+    </div>
+    <p id="status" class="status"></p>
+  </section>
+
+  <section class="panel">
+    <div class="row between">
+      <h2>候选评论</h2>
+      <span id="resultMeta" class="muted"></span>
+    </div>
+    <div id="results" class="results">
+      <p class="empty">尚未生成</p>
+    </div>
+    <div class="row sticky-actions">
+      <button type="button" id="btnCopy" class="primary" disabled>复制所选</button>
+      <button type="button" id="btnInsert" class="ghost" disabled>填入评论框</button>
+    </div>
+  </section>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WhisprRT 多页签听写面板</title>
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --card: #fff;
+      --border: #dde3ea;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --accent: #0d6efd;
+      --danger: #dc3545;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    header {
+      padding: 16px 20px;
+      background: var(--accent);
+      color: #fff;
+    }
+    header h1 { margin: 0; font-size: 18px; }
+    header p { margin: 6px 0 0; font-size: 13px; opacity: 0.92; }
+    .layout { display: grid; grid-template-columns: 320px 1fr; gap: 16px; padding: 16px 20px; }
+    @media (max-width: 800px) { .layout { grid-template-columns: 1fr; } }
+    .side, .main { min-width: 0; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+      margin-bottom: 12px;
+    }
+    .card h2, .card h3 {
+      margin: 0;
+      padding: 10px 12px;
+      font-size: 13px;
+      background: #eef2f7;
+      border-bottom: 1px solid var(--border);
+    }
+    .pad { padding: 12px; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+    label.small { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+    input[type="text"], select {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+    }
+    button {
+      border: none;
+      border-radius: 6px;
+      padding: 8px 12px;
+      cursor: pointer;
+      background: var(--accent);
+      color: #fff;
+      font-size: 13px;
+    }
+    button.secondary { background: #6c757d; }
+    button.danger { background: var(--danger); }
+    .tabs { max-height: 55vh; overflow: auto; }
+    .tab-item {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+    }
+    .tab-item .meta { color: var(--muted); font-size: 11px; word-break: break-all; }
+    .badge {
+      display: inline-block;
+      margin-top: 4px;
+      font-size: 11px;
+      padding: 1px 8px;
+      border-radius: 999px;
+      background: #e9ecef;
+    }
+    .badge.on { background: #d1e7dd; color: #0f5132; }
+    .results { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+    .results pre {
+      margin: 0;
+      padding: 12px;
+      min-height: 180px;
+      max-height: 50vh;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 13px;
+      line-height: 1.5;
+      font-family: inherit;
+    }
+    .err { color: var(--danger); font-size: 13px; margin-top: 8px; }
+    .hint { font-size: 12px; color: var(--muted); line-height: 1.45; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>WhisprRT 多页签听写面板</h1>
+    <p>每个页签独立捕获音频、独立一路文字。多路 Whisper 串行推理，页签越多延迟可能越大。</p>
+  </header>
+  <div class="layout">
+    <div class="side">
+      <div class="card">
+        <h2>控制</h2>
+        <div class="pad">
+          <label class="small">后端 WebSocket</label>
+          <input id="wsBase" type="text" value="ws://127.0.0.1:5444" />
+          <div style="height:8px"></div>
+          <label class="small">语言</label>
+          <select id="lang">
+            <option value="zh" selected>中文</option>
+            <option value="en">英文</option>
+          </select>
+          <div class="row" style="margin-top:12px">
+            <button id="btnRefresh" class="secondary" type="button">刷新页签</button>
+            <button id="btnStart" type="button">开始所选</button>
+            <button id="btnStop" class="danger" type="button">全部停止</button>
+          </div>
+          <p class="hint">先启动 <code>python -m app.main</code>，再勾选正在播放的页签。</p>
+          <div id="error" class="err"></div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>页签列表（当前窗口）</h2>
+        <div id="tabs" class="tabs"></div>
+      </div>
+    </div>
+    <div class="main">
+      <div class="card">
+        <h2>分路实时文字</h2>
+        <div class="pad">
+          <div id="results" class="results"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="panel.js"></script>
+</body>
+</html>

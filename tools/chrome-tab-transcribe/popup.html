@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WhisprRT 多页签听写</title>
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --card: #fff;
+      --border: #dde3ea;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --accent: #0d6efd;
+      --ok: #198754;
+      --danger: #dc3545;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      width: 420px;
+      max-height: 580px;
+      overflow: auto;
+    }
+    header {
+      padding: 12px 14px;
+      background: var(--accent);
+      color: #fff;
+    }
+    header h1 { margin: 0; font-size: 15px; font-weight: 600; }
+    header p { margin: 4px 0 0; font-size: 11px; opacity: 0.9; }
+    .pad { padding: 12px 14px; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+    label.small { font-size: 12px; color: var(--muted); }
+    input[type="text"], select {
+      width: 100%;
+      padding: 6px 8px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 12px;
+    }
+    button {
+      border: none;
+      border-radius: 6px;
+      padding: 7px 12px;
+      font-size: 12px;
+      cursor: pointer;
+      background: var(--accent);
+      color: #fff;
+    }
+    button.secondary { background: #6c757d; }
+    button.danger { background: var(--danger); }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    .tabs {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--card);
+      max-height: 160px;
+      overflow: auto;
+    }
+    .tab-item {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+    }
+    .tab-item:last-child { border-bottom: none; }
+    .tab-item .meta { color: var(--muted); font-size: 11px; word-break: break-all; }
+    .badge {
+      display: inline-block;
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 999px;
+      background: #e9ecef;
+      color: #495057;
+    }
+    .badge.on { background: #d1e7dd; color: #0f5132; }
+    .results { display: flex; flex-direction: column; gap: 10px; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .card h3 {
+      margin: 0;
+      padding: 8px 10px;
+      font-size: 12px;
+      background: #eef2f7;
+      border-bottom: 1px solid var(--border);
+    }
+    .card pre {
+      margin: 0;
+      padding: 8px 10px;
+      max-height: 140px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 12px;
+      line-height: 1.45;
+      font-family: inherit;
+    }
+    .hint { font-size: 11px; color: var(--muted); line-height: 1.4; }
+    .err { color: var(--danger); font-size: 12px; margin-top: 6px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>WhisprRT 多页签听写</h1>
+    <p>勾选多个页签 → 分别捕获音频并实时出字（需本机服务已启动）</p>
+  </header>
+  <div class="pad">
+    <div class="row">
+      <div style="flex:1;min-width:180px">
+        <label class="small">后端地址</label>
+        <input id="wsBase" type="text" value="ws://127.0.0.1:5444" />
+      </div>
+      <div style="width:100px">
+        <label class="small">语言</label>
+        <select id="lang">
+          <option value="zh" selected>中文</option>
+          <option value="en">英文</option>
+        </select>
+      </div>
+    </div>
+    <div class="row">
+      <button id="btnRefresh" class="secondary" type="button">刷新页签</button>
+      <button id="btnStart" type="button">开始监听所选</button>
+      <button id="btnStop" class="danger" type="button">全部停止</button>
+      <button id="btnOpenPanel" class="secondary" type="button">打开大面板</button>
+    </div>
+    <div id="tabs" class="tabs"></div>
+    <p class="hint" style="margin-top:10px">
+      1) 先运行 <code>python -m app.main</code>　2) chrome://extensions 加载本目录　3) 页签需正在播放声音
+    </p>
+    <div id="error" class="err"></div>
+    <h2 style="font-size:13px;margin:14px 0 8px">分路文字</h2>
+    <div id="results" class="results"></div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

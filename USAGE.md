@@ -9,6 +9,27 @@ python -m app.main
 
 浏览器打开：`http://127.0.0.1:5444`（端口见 `app/config.py`）
 
+### Chrome 多页签分别听写
+
+本机麦克风转写只能听到「混音」；若要 **N 个页签各出一份字**，请加载扩展：
+
+1. 先按上面命令启动 `python -m app.main`
+2. Chrome → `chrome://extensions` → 开发者模式 → 加载已解压的扩展程序  
+   目录：`tools/chrome-tab-transcribe`
+3. 勾选多个正在播放的页签 →「开始监听所选」（可用「打开大面板」看分路文字）
+
+详见 `tools/chrome-tab-transcribe/README.md`。后端接口：`/ws/tab`（每页签一条 WebSocket，收 16kHz float32 PCM）。
+
+### Chrome 评论角度助手
+
+按贴文上下文生成多条候选评论并择一使用（可配 API Key、自定义角色角度）：
+
+1. `chrome://extensions` → 加载已解压扩展：`tools/chrome-comment-assistant`
+2. 设置里填 API Key（默认通义 OpenAI 兼容模式）
+3. 打开帖子页 → 生成 → 选择一条 → 复制或填入评论框
+
+详见 `tools/chrome-comment-assistant/README.md`。
+
 ---
 
 ## `batch_whisperx_nodownload.py`（流式转写，不落盘音频）
