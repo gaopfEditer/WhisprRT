@@ -103,11 +103,20 @@ document.getElementById('btnStart').addEventListener('click', async () => {
   for (const id of ids) ensureCard(id, '');
   renderResults();
   const res = await chrome.runtime.sendMessage({ type: 'startTabs', tabIds: ids });
+  if (!res) {
+    setError('扩展无响应，请重载扩展');
+    return;
+  }
   if (!res?.ok) {
     const detail = (res?.errors || []).map((e) => `#${e.tabId}: ${e.error}`).join('; ');
-    setError(detail || res?.error || '启动失败');
+    const raw = detail || res?.error || '启动失败';
+    setError(String(raw).includes('ignored')
+      ? '消息通道异常（ignored）。请重载扩展后再试。'
+      : raw);
   } else if (res.errors?.length) {
     setError(res.errors.map((e) => `#${e.tabId}: ${e.error}`).join('; '));
+  } else {
+    setError('');
   }
   await refreshTabs();
 });
@@ -131,4 +140,17 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'tabStatus') refreshTabs();
 });
 
-loadSettings().then(refreshTabs).then(renderResults);
+async function restoreTranscripts() {
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'getTranscripts' });
+    if (!res?.ok || !res.transcripts) return;
+    for (const [id, item] of Object.entries(res.transcripts)) {
+      transcripts.set(Number(id), {
+        title: item.title || `Tab ${id}`,
+        lines: Array.isArray(item.lines) ? item.lines : [],
+      });
+    }
+  } catch (_) {}
+}
+
+loadSettings().then(restoreTranscripts).then(refreshTabs).then(renderResults);

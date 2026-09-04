@@ -27,3 +27,5 @@ python -m app.main
 - 多路共用同一 Whisper 模型并**串行推理**，页签越多，单路延迟可能越高。
 - `chrome://`、扩展页等无法捕获。
 - 捕获时会通过 AudioContext 回放，避免页签被静音。
+- 若界面出现 `ignored` 或一直「监听中…」无字：到 `chrome://extensions` **重新加载**本扩展，确认 `python -m app.main` 在跑，页签有声音后再点「开始监听所选」。
+- 首次出字大约需 3～5 秒（后端按约 3 秒音频块推理）。

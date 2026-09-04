@@ -107,11 +107,23 @@ document.getElementById('btnStart').addEventListener('click', async () => {
   for (const id of ids) ensureCard(id, '');
   renderResults();
   const res = await chrome.runtime.sendMessage({ type: 'startTabs', tabIds: ids });
+  if (!res) {
+    setError('扩展无响应，请到 chrome://extensions 重载本扩展');
+    return;
+  }
   if (!res?.ok) {
     const detail = (res?.errors || []).map((e) => `#${e.tabId}: ${e.error}`).join('; ');
-    setError(detail || res?.error || '启动失败');
+    const raw = detail || res?.error || '启动失败';
+    // 旧版 offscreen 抢答留下的误报
+    if (String(raw).includes('ignored')) {
+      setError('消息通道异常（ignored）。请重载扩展后再点「开始监听所选」。');
+    } else {
+      setError(raw);
+    }
   } else if (res.errors?.length) {
     setError(res.errors.map((e) => `#${e.tabId}: ${e.error}`).join('; '));
+  } else {
+    setError('');
   }
   await refreshTabs();
   renderResults();
@@ -133,6 +145,19 @@ document.getElementById('btnOpenPanel').addEventListener('click', async () => {
   });
 });
 
+async function restoreTranscripts() {
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'getTranscripts' });
+    if (!res?.ok || !res.transcripts) return;
+    for (const [id, item] of Object.entries(res.transcripts)) {
+      transcripts.set(Number(id), {
+        title: item.title || `Tab ${id}`,
+        lines: Array.isArray(item.lines) ? item.lines : [],
+      });
+    }
+  } catch (_) {}
+}
+
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'transcription' && msg.data) {
     const tabId = Number(msg.tabId ?? msg.data.tab_id);
@@ -143,6 +168,7 @@ chrome.runtime.onMessage.addListener((msg) => {
       : msg.data.text;
     item.lines.push(line);
     renderResults();
+    setError('');
   }
   if (msg.type === 'tabError') {
     setError(`#${msg.tabId}: ${msg.error}`);
@@ -152,9 +178,17 @@ chrome.runtime.onMessage.addListener((msg) => {
     renderResults();
     refreshTabs();
   }
+  if (msg.type === 'tabStatus' && msg.status === 'streaming') {
+    // 已在推音频；若长时间无字，多半是静音过滤或后端未出结果
+    const el = errorEl;
+    if (el && /ignored/i.test(el.textContent || '')) setError('');
+  }
   if (msg.type === 'tabStatus' && msg.status === 'stopped') {
     refreshTabs();
   }
 });
 
-loadSettings().then(refreshTabs).then(renderResults);
+loadSettings()
+  .then(restoreTranscripts)
+  .then(refreshTabs)
+  .then(renderResults);

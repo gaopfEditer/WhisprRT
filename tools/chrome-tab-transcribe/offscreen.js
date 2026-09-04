@@ -25,26 +25,44 @@ async function startSession({ tabId, streamId, wsUrl, title }) {
     await stopSession(tabId);
   }
 
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      mandatory: {
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        mandatory: {
+          chromeMediaSource: 'tab',
+          chromeMediaSourceId: streamId,
+        },
+      },
+      video: false,
+    });
+  } catch (e1) {
+    // 部分 Chromium 版本不接受 mandatory 写法
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
         chromeMediaSource: 'tab',
         chromeMediaSourceId: streamId,
       },
-    },
-    video: false,
-  });
+      video: false,
+    });
+  }
 
-  const ctx = new AudioContext();
+  const ctx = new AudioContext({ sampleRate: 48000 });
+  // Offscreen 里常为 suspended，不 resume 则 onaudioprocess 不会触发 → 一直「监听中」无字
+  if (ctx.state === 'suspended') {
+    await ctx.resume();
+  }
   const source = ctx.createMediaStreamSource(stream);
-  // 4096 ~ 85ms @48k；缓冲由后端按 BUFFER_SECONDS 聚合
   const processor = ctx.createScriptProcessor(4096, 1, 1);
 
   const ws = new WebSocket(wsUrl);
   ws.binaryType = 'arraybuffer';
 
   await new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error('WebSocket 连接超时，请确认 python -m app.main 已启动')), 8000);
+    const t = setTimeout(
+      () => reject(new Error('WebSocket 连接超时，请确认 python -m app.main 已启动')),
+      8000
+    );
     ws.onopen = () => {
       clearTimeout(t);
       resolve();
@@ -84,13 +102,28 @@ async function startSession({ tabId, streamId, wsUrl, title }) {
     stopSession(tabId, { skipWs: true });
   };
 
+  let chunksSent = 0;
   processor.onaudioprocess = (e) => {
     const input = e.inputBuffer.getChannelData(0);
     // 回放原音，避免 tabCapture 静音页签
     e.outputBuffer.getChannelData(0).set(input);
     if (ws.readyState !== WebSocket.OPEN) return;
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+      return;
+    }
     const pcm = downsample(input, ctx.sampleRate, 16000);
     ws.send(pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength));
+    chunksSent += 1;
+    if (chunksSent === 1 || chunksSent % 50 === 0) {
+      notify({
+        type: 'tabStatus',
+        tabId,
+        status: 'streaming',
+        title,
+        chunksSent,
+      });
+    }
   };
 
   source.connect(processor);
@@ -125,6 +158,16 @@ async function stopSession(tabId, opts = {}) {
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  // 关键：只认领自己的消息。若对其它消息 sendResponse({error:'ignored'})，
+  // Chrome 可能把它当成 popup→startTabs 的唯一响应，界面就会显示 ignored。
+  if (msg?.type === 'offscreenPing') {
+    sendResponse({ ok: true, pong: true, sessions: sessions.size });
+    return false;
+  }
+  if (msg?.type !== 'offscreenStart' && msg?.type !== 'offscreenStop') {
+    return false;
+  }
+
   (async () => {
     try {
       if (msg.type === 'offscreenStart') {
@@ -137,7 +180,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         sendResponse({ ok: true });
         return;
       }
-      sendResponse({ ok: false, error: 'ignored' });
     } catch (e) {
       sendResponse({ ok: false, error: String(e?.message || e) });
     }

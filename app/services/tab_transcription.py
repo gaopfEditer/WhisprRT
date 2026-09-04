@@ -100,12 +100,11 @@ class TabTranscriptionSession:
             self.buffer = np.empty((0,), dtype=np.float32)
             self.last_flush = time.time()
 
-        if self._is_silence(samples):
+        peak = float(np.max(np.abs(samples))) if samples.size else 0.0
+        # 页签捕获音量有时偏小；先按峰值判断是否近乎无声，再归一化
+        if peak < 1e-4:
             return
-
-        peak = float(np.max(np.abs(samples)))
-        if peak > 0:
-            samples = (samples / peak).astype(np.float32)
+        samples = (samples / peak).astype(np.float32)
 
         try:
             with _whisper_lock:
