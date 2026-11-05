@@ -32,6 +32,35 @@ python -m app.main
 
 ---
 
+## `app/virtualcam.py`（Windows 虚拟摄像头）
+
+用 `pyvirtualcam` 向系统注册/推送虚拟摄像头画面（需 OBS Virtual Camera 驱动）。
+
+```powershell
+.venv\Scripts\Activate.ps1
+pip install pyvirtualcam   # 或 uv sync
+python -m app.virtualcam
+```
+
+**常用参数：**
+
+```powershell
+# 默认 640x480@30 纯绿
+python -m app.virtualcam
+
+# 测试图案 / 指定颜色与分辨率
+python -m app.virtualcam --mode pattern --width 1280 --height 720 --fps 30
+python -m app.virtualcam --mode color --color 255,0,0
+
+# 循环推送本地视频（需 opencv-python）
+pip install opencv-python
+python -m app.virtualcam --mode video --source D:\demo.mp4
+```
+
+**Windows 准备：** 安装 [OBS Studio](https://obsproject.com/)，打开 OBS 点一次「启动虚拟摄像头」以注册驱动；之后在 Zoom/Teams/浏览器里选该虚拟摄像头即可。Ctrl+C 结束推流。
+
+---
+
 ## `batch_whisperx_nodownload.py`（流式转写，不落盘音频）
 
 **按 `videos.json` 批量：**
